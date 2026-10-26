@@ -197,7 +197,7 @@ cargo build --workspace --locked
 
 测试使用临时目录、本机 TCP/UDP 和空闲高端口，不要求目标板卡、系统 NFS 挂载或管理员权限。进程级测试运行实际 CLI，在结束并重新启动服务后直接复用旧文件和目录句柄；不通过重新挂载获取新句柄来替代恢复验证。
 
-实际验证记录见 [docs/progress.md](docs/progress.md)：Windows 与 Linux 的本机测试、构建已通过，Windows GUI 已实际运行。macOS、Linux GUI 窗口和 GitHub Actions CI 本轮未运行；CI 文件存在不代表已经执行，也不代表完成了真实设备启动验证。
+实际验证记录见 [docs/progress.md](docs/progress.md)：Windows 与 Linux 的本机测试、构建已通过，Windows GUI 已实际运行；远端 CI 的执行结果与失败修复也记录在其中。Linux/macOS GUI 窗口及真实设备启动尚未验证，不以编译或协议测试代替设备启动验证。
 
 ## CI 缓存与版本发布
 

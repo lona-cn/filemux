@@ -199,7 +199,8 @@ async fn oversized_request_is_rejected_without_stopping_the_listener() {
     std::fs::write(fixture.root.join("file"), b"still available").unwrap();
     let server = fixture.start(false).await;
     let socket = client().await;
-    let oversized = request(1, "file", "octet", &[("ignored", &"x".repeat(60_000))]);
+    // Exceed the 4096-byte protocol limit, not the host's UDP send limit.
+    let oversized = request(1, "file", "octet", &[("ignored", &"x".repeat(4_096))]);
     let (response, source) = begin(&socket, &server, &oversized).await;
     assert_eq!(source, server.endpoints[0].address);
     assert_eq!(error_code(&response), 4);

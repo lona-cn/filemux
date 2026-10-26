@@ -53,7 +53,7 @@
 ## 平台与验证范围
 
 - 没有未完成的阶段一实现项或已确认的外部阻塞。
-- Windows x64/MSVC、WSL Ubuntu 24.04 已实际完成测试与构建；Windows GUI 已实际验收。macOS、Linux GUI 窗口、三平台 GitHub Actions CI 本轮未运行。
+- Windows x64/MSVC、WSL Ubuntu 24.04 已实际完成测试与构建，Windows GUI 已实际验收。首次远端三平台 CI 已执行，结果及 macOS 测试修复见下方记录；Linux/macOS GUI 窗口尚未运行。
 - 未进行 U-Boot 真机、完整 Linux 无盘启动、系统 NFS 挂载或硬件故障测试；这些不是本阶段交付门槛。无需重新挂载的基本证据是实际进程重启后，直接用旧文件与目录句柄通过 TCP/UDP 继续访问，未重新 MOUNT/LOOKUP 获取替代句柄。
 
 ## 后续改动：CI 缓存与版本 tag 发布
@@ -71,3 +71,12 @@
 | 解压后运行 | Windows 真实 HTTP 下载返回 200 且内容一致；Linux 真实 HTTP 下载、SIGTERM 正常退出及全部 6 个监听地址释放通过。 |
 | 发布脚本边界 | tag 不匹配、缺二进制、覆盖已有包、缺目标包均被拒绝；隔离清单数据验证了 SHA-256 内容、排序及额外资产拒绝；隔离版本文件验证了 prerelease 判断。未用这些数据冒充 macOS 构建。 |
 | 清理与未执行范围 | 临时压缩包、解压目录、校验工具及本任务进程已清理。未创建/推送 tag、未提交、未发布 Release；GitHub 实际缓存命中、远端发布及 macOS release 构建尚未执行。Rust 服务源码未改动，本次未重复运行阶段一整套 Rust 测试。 |
+
+## 首次 CI 失败修复：macOS 超长 UDP 测试
+
+- 失败记录：[Rust #40276978551](https://github.com/lona-cn/filemux/actions/runs/40276978551)，提交 `00d03c0`。Windows/Linux job 通过，macOS 唯一失败项为 `oversized_request_is_rejected_without_stopping_the_listener`。
+- 原测试构造约 60 KB 的 UDP 请求，macOS 客户端在 `send_to` 就返回 `Message too long`（OS error 40），报文没有到达服务器。不是服务端处理请求时出错，不能靠重跑、跳过测试或放宽服务端限制解决。
+- 测试改为 4096 字节选项值，加协议字段后总长 4118 字节，仍超过服务端 4096 字节限制；保留 ERROR 4、响应来自监听端口、随后下载内容正确等断言。未改变服务端、CI 矩阵或测试启用条件。
+- 修复后本地检查：`cargo fmt --all -- --check` 通过；Windows 与 WSL Linux 的 `cargo test -p filemux-tftp --test udp --locked` 各 12 项通过、0 failed、0 ignored（Linux 使用原有离线缓存和 `target/linux`）。
+- 另以实际 release CLI 通过本机 UDP 发送同样的 4118 字节报文，收到 ERROR 4，随后成功下载原文件，内容完全一致；临时目录和进程均已清理。
+- 本机没有 macOS 环境，修复后的 macOS 全套结果需以该修复提交的 GitHub CI 为准，不将 Windows/Linux 本地结果冒充 macOS 复验。
