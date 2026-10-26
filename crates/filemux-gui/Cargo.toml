@@ -3,15 +3,19 @@ name = "filemux-gui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+publish = false
+repository.workspace = true
+license.workspace = true
+license-file.workspace = true
+readme.workspace = true
 
 [[bin]]
 name = "filemux-gui"
 path = "src/main.rs"
 
 [dependencies]
-filemux-core = { path = "../filemux-core" }
-filemux-engine = { path = "../filemux-engine" }
+filemux-core = { version = "0.1.0", path = "../filemux-core" }
+filemux-engine = { version = "0.1.0", path = "../filemux-engine" }
 anyhow.workspace = true
 eframe.workspace = true
 clap.workspace = true

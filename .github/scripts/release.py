@@ -23,6 +23,7 @@ TARGETS = (
 )
 RESOURCES = (
     "README.md",
+    "LICENSE",
     "examples/filemux.toml",
     "assets/fonts/OFL.txt",
     "docs/phase-1.md",

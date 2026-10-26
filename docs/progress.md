@@ -5,7 +5,7 @@
 - 阶段一需求与验收条件已整理到 `docs/phase-1.md`。
 - 阶段一实现及基本验收已完成：8-crate workspace、公共文件访问、持久身份、三种协议、engine、CLI 与 egui GUI 均已实现。Windows 52 项、Linux 54 项测试及两平台完整构建通过，Windows GUI 已完成实际窗口验收。
 - GUI 预览已实际生成并检查，路径为 `docs/previews/phase-1.webp`；图片中的示例状态不代表实际服务运行结果。
-- 后续继续开发前先核对项目实际状态，保留已有改动，不重复初始化。macOS、Linux GUI 窗口及 CI 的未验证范围见文末。
+- 后续继续开发前先核对项目实际状态，保留已有改动，不重复初始化。Linux/macOS GUI 窗口及硬件启动的未验证范围见文末。
 
 ## 里程碑
 
@@ -18,7 +18,7 @@
 | 基本单元测试与真实服务集成测试 | Windows 52 项、Linux 54 项通过 | 无 ignored 测试；进程级测试不重新 MOUNT/LOOKUP 即可复用旧文件与目录句柄。 |
 | generate_image GUI 预览 | 已完成 | `docs/previews/phase-1.webp`，由 generate_image 生成，已检查关键中文与 egui 可实现性。 |
 | egui GUI 与基本运行检查 | Windows 验收通过 | 实际目录选择、保存、配置状态区分、HTTP 启停与下载、只读拒绝、绑定失败及重试、关闭后端口释放；中文与普通/最大化布局已检查。 |
-| 三平台构建、测试配置与使用说明 | 已完成 | Windows/Linux/macOS CI、README、配置示例及字体许可已写入；CI 尚未执行，不宣称 macOS 已通过。 |
+| 三平台构建、测试配置与使用说明 | 已完成 | Windows/Linux/macOS CI 全部通过，四平台原生 Release 已构建并发布；不包含 Linux/macOS GUI 窗口或设备启动验收。 |
 
 ## 后续使用
 
@@ -53,7 +53,7 @@
 ## 平台与验证范围
 
 - 没有未完成的阶段一实现项或已确认的外部阻塞。
-- Windows x64/MSVC、WSL Ubuntu 24.04 已实际完成测试与构建，Windows GUI 已实际验收。首次远端三平台 CI 已执行，结果及 macOS 测试修复见下方记录；Linux/macOS GUI 窗口尚未运行。
+- Windows x64/MSVC、WSL Ubuntu 24.04 已实际完成测试与构建，Windows GUI 已实际验收。修复提交的 Windows/Linux/macOS 远端 CI 全部通过，四平台原生 Release 已发布；Linux/macOS GUI 窗口尚未运行。
 - 未进行 U-Boot 真机、完整 Linux 无盘启动、系统 NFS 挂载或硬件故障测试；这些不是本阶段交付门槛。无需重新挂载的基本证据是实际进程重启后，直接用旧文件与目录句柄通过 TCP/UDP 继续访问，未重新 MOUNT/LOOKUP 获取替代句柄。
 
 ## 后续改动：CI 缓存与版本 tag 发布
@@ -79,4 +79,27 @@
 - 测试改为 4096 字节选项值，加协议字段后总长 4118 字节，仍超过服务端 4096 字节限制；保留 ERROR 4、响应来自监听端口、随后下载内容正确等断言。未改变服务端、CI 矩阵或测试启用条件。
 - 修复后本地检查：`cargo fmt --all -- --check` 通过；Windows 与 WSL Linux 的 `cargo test -p filemux-tftp --test udp --locked` 各 12 项通过、0 failed、0 ignored（Linux 使用原有离线缓存和 `target/linux`）。
 - 另以实际 release CLI 通过本机 UDP 发送同样的 4118 字节报文，收到 ERROR 4，随后成功下载原文件，内容完全一致；临时目录和进程均已清理。
-- 本机没有 macOS 环境，修复后的 macOS 全套结果需以该修复提交的 GitHub CI 为准，不将 Windows/Linux 本地结果冒充 macOS 复验。
+- 修复提交 `b44833b` 的远端 [Rust #40279460896](https://github.com/lona-cn/filemux/actions/runs/40279460896) 已完成，Windows、Linux、macOS 全部通过；macOS 结果来自远端 runner，不是本机模拟。
+
+## v0.1.0 GitHub Release
+
+- `v0.1.0` 指向 `b44833b`。[Release #40280255603](https://github.com/lona-cn/filemux/actions/runs/40280255603) 的版本检查、三平台完整 CI、四平台原生构建与发布共 9 个 job 全部成功。
+- [公开 Release](https://github.com/lona-cn/filemux/releases/tag/v0.1.0) 包含 Windows x64、Linux x64、macOS Intel、macOS Apple Silicon 四个压缩包及 `SHA256SUMS`，不是 draft 或 prerelease。既有 tag 和 Release 不因后续 crates.io 发布准备而移动或覆盖。
+
+## crates.io 0.1.0 发布准备
+
+- 保留 `filemux-cli` 包名和 `filemux` 可执行文件名，开放 core、fs、http、tftp、nfs、engine、cli 共 7 个 crate 的 crates.io 发布；GUI 明确保持 `publish = false`。
+- 源码采用用户确认的 `MIT OR Apache-2.0`，根 `LICENSE` 包含两份完整条款。Noto 字体仍单独使用 SIL OFL。后续 GitHub 二进制打包也加入源码 `LICENSE`，不改已发布资产。
+- README 已按安装、快速开始、GUI、配置、协议与平台限制、开发及发布维护重新组织，并增加 `cargo install filemux-cli --version 0.1.0 --locked`、PATH、编译环境与许可证说明。
+
+| 上传前检查 | 实际结果 |
+| --- | --- |
+| `cargo test --workspace --locked`，Windows | 52 项通过，0 failed、0 ignored。未修改 Rust 服务源码。 |
+| `cargo fmt --all -- --check` | 通过。 |
+| 7-crate workspace `cargo publish --dry-run --locked --allow-dirty` | 全部完成打包、解包构建验证；没有使用 `--no-verify`。首次受个人 rsproxy 源替换阻断，改用临时 `CARGO_HOME` 直连官方 registry 后通过，未修改全局配置。 |
+| 源码包内容 | 7 包均附带 README、LICENSE、Cargo.lock；README 与 LICENSE 的 SHA-256 分别与原文件一致，规范化依赖清单使用 registry 版本而非本地路径。 |
+| `cargo install --path crates/filemux-cli --locked` | 安装到本任务隔离目录，`filemux --version` 为 `0.1.0`，帮助、初始化与配置检查通过。 |
+| 安装后真实服务检查 | HTTP 返回 200 且内容一致；TFTP 下载内容一致、默认拒绝上传；NFS 与 portmapper 的 TCP/UDP RPC NULL 均成功。进程结束后全部 6 个监听地址可重新绑定。 |
+| Windows Release 打包资源 | 用已有真实 CLI/GUI 二进制运行打包脚本，ZIP 同时包含源码 LICENSE 与字体 OFL。只生成本地临时包，没有替换远端 Release。 |
+
+`license` 保留 SPDX 表达式，`license-file` 用于将共享完整条款自动带入各源码包；Cargo 对同时声明两项给出冗余提示，7 包构建验证均成功。本节记录正式上传前的检查，不把 dry-run 当作已经发布；上传与 registry 安装结果应以实际执行为准。

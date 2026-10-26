@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+repository.workspace = true
+license.workspace = true
+license-file.workspace = true
+readme.workspace = true
+description = "Shared configuration, service lifecycle, and event types for Filemux file servers"
+keywords = ["filemux", "file-sharing", "configuration", "server"]
+categories = ["config", "network-programming"]
 
 [dependencies]
 anyhow.workspace = true
