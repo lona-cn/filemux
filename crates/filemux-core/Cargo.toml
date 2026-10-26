@@ -25,10 +25,11 @@ cap-std.workspace = true
 cap-fs-ext.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 percent-encoding.workspace = true
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
+http-body-util = "0.1"
 fs2 = "0.4.3"
 
 [target.'cfg(unix)'.dependencies]

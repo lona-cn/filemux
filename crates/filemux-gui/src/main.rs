@@ -924,13 +924,16 @@ impl FilemuxApp {
                     };
                     let start_reason = self.start_blocker();
                     let can_stop = self.operation.is_none() && !self.closing;
-                    let upload = if view.snapshot.state == ServiceState::Running {
-                        self.active_config.tftp.allow_upload
+                    let access_config = if view.snapshot.state == ServiceState::Running {
+                        Some(&self.active_config)
                     } else {
-                        self.saved_form
-                            .as_ref()
-                            .is_some_and(|saved| saved.config.tftp.allow_upload)
+                        self.saved_form.as_ref().map(|saved| &saved.config)
                     };
+                    let upload = access_config.is_some_and(|config| match protocol {
+                        Protocol::Http => config.http.allow_upload,
+                        Protocol::Tftp => config.tftp.allow_upload,
+                        Protocol::Nfs => false,
+                    });
                     let height = if view.listeners.len() > 1 { 94.0 } else { 62.0 };
                     service_columns(ui, widths, height, |column, ui| match column {
                         0 => {
@@ -964,7 +967,7 @@ impl FilemuxApp {
                             }
                         }
                         3 => {
-                            ui.label(if protocol != Protocol::Tftp {
+                            ui.label(if protocol == Protocol::Nfs {
                                 lang.text("Read-only", "只读")
                             } else if upload {
                                 lang.text("Upload enabled", "允许上传")

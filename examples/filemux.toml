@@ -6,6 +6,10 @@ state_dir = "../.filemux-state"
 [http]
 enabled = true
 bind = "127.0.0.1:8080"
+# HTTP 上传独立开启；支持目录页和 PUT，仅新建文件，不覆盖。
+allow_upload = false
+# 单文件上限，单位为字节；默认 1 GiB。
+max_upload_bytes = 1073741824
 max_connections = 128
 
 [tftp]

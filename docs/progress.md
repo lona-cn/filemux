@@ -3,7 +3,7 @@
 ## 当前状态
 
 - 阶段一需求与验收条件已整理到 `docs/phase-1.md`。
-- 阶段一功能与三 crate 合并已完成，workspace 仅含 `filemux-core`、`filemux-cli`、`filemux-gui`。GUI 已按“服务 / 设置 / 日志”分开布局并支持双语；本轮三个 crate 的版本统一为 `0.1.2`。
+- 阶段一功能与三 crate 合并已完成，workspace 仅含 `filemux-core`、`filemux-cli`、`filemux-gui`。GUI 已按“服务 / 设置 / 日志”分开布局并支持双语，HTTP 已支持独立启用上传；本轮三个 crate 的版本统一为 `0.2.0`。
 - 初版预览为 `docs/previews/phase-1.webp`。新版先生成并检查 `docs/previews/gui-layout-services.webp` 和 `docs/previews/gui-layout-nfs-settings.webp`，用户确认后才开始拆解与实现；图片示例不是实际服务结果。
 - 后续继续开发前先核对项目实际状态，保留已有改动，不重复初始化。Linux/macOS GUI 窗口及硬件启动的未验证范围见文末。
 - 下列原阶段一的 GUI 验收记录对应旧布局，不能代替新版交互验收。新版改动与实际验证范围见文末。
@@ -204,4 +204,37 @@
 | 实际 CLI / GUI 程序 | 通过 `cargo run --locked --offline` 分别运行版本命令，输出 `filemux 0.1.2` 与 `filemux-gui 0.1.2`；GUI 版本命令不打开窗口。 |
 | 发布顺序 | 批量 dry-run 在打包 CLI 时因 `rsproxy-sparse` 尚无 core 0.1.2 而停止，未上传任何包。改为 core → CLI → GUI，正式发布保留 Cargo 的解包构建校验，不使用 `--no-verify`。 |
 | core 发布包预检 | `cargo publish -p filemux-core --registry crates-io --locked --dry-run --allow-dirty` 完成真实解包构建，成功后按 dry-run 中止上传；CLI/GUI 在 core 公开后分别执行正式发布校验，不把此前批量预检记为通过。 |
+
+## HTTP 上传（0.2.0）
+
+### 已实现
+
+- HTTP 新增独立的 `allow_upload` 与 `max_upload_bytes` 配置，默认关闭上传、单文件上限 1 GiB；旧配置缺少新字段时仍可加载。TFTP 原有开关不改变 HTTP 权限，NFS 仍只读。
+- `PUT /path/file` 流式接收原始文件内容，支持空文件和 chunked 请求，成功返回 `201` 与规范编码的 `Location`。父目录必须已经存在，不提供覆盖、分段或断点续传。
+- HTTP 目录页在允许上传时显示单文件表单；multipart POST 只接受一个名为 `file`、具有合法文件名的 part，成功后以 `303` 返回当前目录。拒绝额外 part 后才发布文件；请求体总上限为单文件上限加 64 KiB。
+- 复用公共文件层的临时文件和无覆盖发布；已有目标返回 `409`，超限返回 `413`。路径、保留名和跨站写入检查不会因开启上传而取消；断连和停服不会发布未完成的文件。
+- CLI 增加 `--allow-http-upload`；GUI 增加双语 HTTP 上传开关、单文件上限说明，服务页按各协议的已保存或正在使用的配置显示权限。README 中英文、配置示例和阶段说明已同步。
+
+### 实际验证
+
+| 检查 | 实际结果 |
+| --- | --- |
+| Windows workspace 测试 | `cargo test --workspace`：66 项通过，0 failed、0 ignored；包含 6 项新增上传网络回归。此命令同时更新 multipart 所需的 Cargo.lock 依赖。 |
+| 最终 HTTP 回归与格式 | 保留原测试中 `enabled = false` 也可显式启动服务的检查后，`cargo fmt --all -- --check` 和 `cargo test -p filemux-core --test http --locked` 通过；HTTP 共 10 项通过。 |
+| 实际程序构建 | `cargo build --workspace --locked` 通过，生成 CLI 和 GUI；保留原有 `license` / `license-file` 清单提示。 |
+| 独立 CLI 进程 | 通过 `--allow-http-upload` 启动，PUT 返回 `201`、下载内容完全一致、重复上传返回 `409` 且原文件不变；3 MiB multipart 上传返回 `303`，落盘内容一致，不受 axum 默认 2 MiB 限制。配置文件没有被运行参数改写。 |
+| 真实浏览器表单 | Chromium 实际选择文件、提交中文子目录的表单，观察到 POST `303` → GET `200`；目录出现上传文件，落盘内容与源文件一致，并检查实际页面截图。 |
+| CLI 参数与 curl | 实际 `serve --help` 包含两个独立开关；`curl.exe --upload-file` 成功，文件内容一致。只传 TFTP 的 `--allow-upload` 时，HTTP PUT 仍返回 `405`、`Allow: GET, HEAD`，目录无上传表单，未创建文件。 |
+| 原生 GUI 只读检查 | 实际打开隔离配置的两个窗口，辅助功能树分别显示 HTTP 的 `Download only` 和 `Upload enabled`，并保持“已保存、尚未运行”状态。未操作用户已有窗口。 |
+| 清理 | 本任务 CLI、GUI 实例及浏览器页已停止或关闭；两个 CLI 监听端口均可重新绑定。隔离 smoke 文件及目录已清理，未修改用户配置、系统服务或防火墙。 |
+
+桌面输入控制首次调用即返回 `Computer session is closed`，因此未点击新复选框或验证设置页保存交互；只读窗口文字检查不算交互或视觉布局验收。本轮未运行 Linux/macOS、远端 CI 或硬件检查，未提交、推送或发布。
+
+## 0.2.0 发布前检查
+
+- workspace 版本及 CLI、GUI 的 core 依赖要求统一升级到 `0.2.0`，Cargo.lock 已同步；本版包含上述 HTTP 上传功能，不覆盖旧版本。
+- Windows 执行 `cargo test --workspace --offline`：66 项通过，0 failed、0 ignored；`cargo fmt --all -- --check`、`cargo build --workspace --locked --offline` 通过。实际 CLI 与 GUI 版本命令分别输出 `filemux 0.2.0`、`filemux-gui 0.2.0`。
+- `cargo publish -p filemux-core --registry crates-io --locked --dry-run --allow-dirty` 完成真实打包和解包构建校验，按 dry-run 中止上传；三包文件清单均包含 README、LICENSE、Cargo.lock，GUI 另含原中文字体与 OFL。
+- 批量 dry-run 在 CLI 解析 `filemux-core ^0.2.0` 时停止：registry 中尚无该版本。正式发布按 core → CLI → GUI 进行，下游包在 core 可用后执行解包构建，不使用 `--no-verify`。
+- 本节记录提交和上传前的本机检查；提交、推送、crates.io 发布及远端 CI 的最终结果以实际远程记录为准。不创建新 tag 或 GitHub Release。
 

@@ -55,6 +55,8 @@ enum Command {
         no_http: bool,
         #[arg(long, help = "允许 TFTP 上传，仍不覆盖已有文件")]
         allow_upload: bool,
+        #[arg(long, help = "允许 HTTP 上传（默认关闭），仅新建文件，不覆盖已有文件")]
+        allow_http_upload: bool,
         #[arg(long, help = "将就绪信息以一行 JSON 输出到 stdout，日志写入 stderr")]
         json: bool,
     },
@@ -84,7 +86,9 @@ async fn run(cli: Cli) -> Result<()> {
         }
         config.save(&path)?;
         println!("配置已保存：{}", path.display());
-        println!("TFTP 上传默认关闭；尚未启动任何服务。");
+        println!(
+            "HTTP 和 TFTP 上传均默认关闭；启用后仅新建文件，不覆盖已有文件。尚未启动任何服务。"
+        );
         return Ok(());
     }
     let mut config = if path.exists() {
@@ -114,6 +118,7 @@ async fn run(cli: Cli) -> Result<()> {
             no_rpcbind,
             no_http,
             allow_upload,
+            allow_http_upload,
             json,
         } => {
             if let Some(root) = root {
@@ -145,6 +150,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
             if allow_upload {
                 config.tftp.allow_upload = true;
+            }
+            if allow_http_upload {
+                config.http.allow_upload = true;
             }
             config.validate()?;
             let mut engine = Engine::new(config);

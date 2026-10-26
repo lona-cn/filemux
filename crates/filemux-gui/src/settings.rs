@@ -221,8 +221,8 @@ impl FilemuxApp {
                 hint(
                 ui,
                 lang.text(
-                    "HTTP, TFTP and NFSv3 share files in this directory. HTTP and NFSv3 are always read-only.",
-                    "HTTP、TFTP 和 NFSv3 共享此目录中的文件。HTTP 与 NFSv3 始终只读。",
+                    "HTTP, TFTP and NFSv3 share files in this directory. HTTP and TFTP uploads are disabled by default; NFSv3 is always read-only.",
+                    "HTTP、TFTP 和 NFSv3 共享此目录中的文件。HTTP 与 TFTP 上传默认关闭；NFSv3 始终只读。",
                 ),
             );
                 ui.add_space(16.0);
@@ -288,7 +288,7 @@ impl FilemuxApp {
     fn draw_http_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
         let editable = self.edits_allowed();
-        settings_card(ui, lang, "HTTP", true, |ui| {
+        settings_card(ui, lang, "HTTP", false, |ui| {
             ui.add_enabled_ui(editable, |ui| {
                 bind_fields(
                     ui,
@@ -297,13 +297,29 @@ impl FilemuxApp {
                     &mut self.form.http_ip,
                     &mut self.form.config.http.bind,
                 );
+                ui.add_space(12.0);
+                ui.push_id("http-allow-upload", |ui| {
+                    ui.checkbox(
+                        &mut self.form.config.http.allow_upload,
+                        lang.text("Allow HTTP uploads", "允许 HTTP 上传"),
+                    );
+                });
             });
             ui.add_space(8.0);
             hint(
                 ui,
                 lang.text(
-                    "HTTP is always read-only: clients can browse and download shared files, but cannot upload or modify them.",
-                    "HTTP 始终只读，可浏览和下载共享目录中的文件，不允许上传或修改。",
+                    "Uploads are disabled by default. When enabled, clients can create new files but cannot overwrite existing files.",
+                    "上传默认关闭。启用后只允许新建文件，不覆盖已有文件。",
+                ),
+            );
+            hint(
+                ui,
+                &format!(
+                    "{}: {} {}",
+                    lang.text("Maximum file size", "单文件大小上限"),
+                    self.form.config.http.max_upload_bytes,
+                    lang.text("bytes", "字节"),
                 ),
             );
         });

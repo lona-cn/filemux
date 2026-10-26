@@ -105,6 +105,10 @@ impl Config {
             "HTTP 并发连接数应为 1–4096"
         );
         ensure!(
+            self.http.max_upload_bytes > 0,
+            "HTTP 上传大小上限必须大于零"
+        );
+        ensure!(
             (1..=1024).contains(&self.tftp.max_transfers),
             "TFTP 并发传输数应为 1–1024"
         );
@@ -173,6 +177,8 @@ fn same_listener(a: SocketAddr, b: SocketAddr) -> bool {
 pub struct HttpConfig {
     pub enabled: bool,
     pub bind: SocketAddr,
+    pub allow_upload: bool,
+    pub max_upload_bytes: u64,
     pub max_connections: usize,
 }
 
@@ -181,6 +187,8 @@ impl Default for HttpConfig {
         Self {
             enabled: true,
             bind: local(8080),
+            allow_upload: false,
+            max_upload_bytes: 1024 * 1024 * 1024,
             max_connections: 128,
         }
     }
@@ -302,6 +310,9 @@ mod tests {
         assert!(config.validate().is_err());
         config.tftp.timeout_ms = 1000;
         config.tftp.max_upload_bytes = 0;
+        assert!(config.validate().is_err());
+        config.tftp.max_upload_bytes = TftpConfig::default().max_upload_bytes;
+        config.http.max_upload_bytes = 0;
         assert!(config.validate().is_err());
     }
 

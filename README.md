@@ -23,7 +23,7 @@ Screenshots show the current development version.
 
 | Protocol | Transport and default ports | Access |
 | --- | --- | --- |
-| HTTP | TCP 8080 | Read-only: directory browsing, GET, HEAD and single byte ranges. |
+| HTTP | TCP 8080 | Directory browsing, GET, HEAD and single byte ranges. Browser and PUT uploads are opt-in and never overwrite files. |
 | TFTP | UDP 69; dynamic UDP data ports | Octet transfers with `blksize`, `timeout` and `tsize`. Uploads are opt-in and never overwrite files. |
 | NFSv3 / MOUNTv3 | TCP/UDP 2049; optional portmapper v2 on 111 | Read-only, with persistent file handles and subdirectory mounts. |
 
@@ -55,13 +55,23 @@ filemux --config filemux.toml serve
 
 Place files in `share` and open <http://127.0.0.1:8080/>. The initial configuration enables **HTTP only**, bound to localhost. Press Ctrl+C to stop. `init` never overwrites a configuration; `check` does not start services or test port availability. See the [configuration example](examples/filemux.toml); relative paths are resolved from the configuration file.
 
+Enable HTTP uploads, then use the directory page or upload from another terminal:
+
+```sh
+filemux --config filemux.toml serve --allow-http-upload
+# In another terminal:
+curl --upload-file ./example.bin http://127.0.0.1:8080/example.bin
+```
+
+HTTP uploads are disabled by default. To persist the choice, set `allow_upload = true` under `[http]` or enable **Allow HTTP uploads** in the desktop app's HTTP settings. The directory form uploads one file into the current directory; `PUT /path/file` accepts raw bytes. Parent directories must already exist. The per-file limit defaults to 1 GiB (`http.max_upload_bytes`). PUT returns `201`; the form uses multipart POST and redirects with `303`. Existing targets return `409`, and oversized uploads return `413`. Incomplete uploads are not published; partial/resumable uploads are not supported.
+
 Enable TFTP uploads on a local high port:
 
 ```sh
 filemux --config filemux.toml serve --tftp-bind 127.0.0.1:1069 --allow-upload
 ```
 
-Overrides affect only this run. `--no-http` disables HTTP; `--json` reports actual ready endpoints. Enabling TFTP uploads does not change HTTP or NFS permissions.
+Overrides affect only this run. `--no-http` disables HTTP; `--json` reports actual ready endpoints. `--allow-upload` controls only TFTP; `--allow-http-upload` controls only HTTP. NFS remains read-only.
 
 ### Desktop app
 
@@ -90,7 +100,7 @@ Keep the original shared root, objects and state directory to reuse NFS handles 
 
 ### Security and limitations
 
-- **Trusted networks only.** TFTP has no user authentication; NFS AUTH_SYS does not verify remote UID/GID claims. Neither is encrypted, and HTTP does not provide HTTPS. File access remains subject to the server process's host permissions.
+- **Trusted networks only.** HTTP and TFTP have no user authentication; NFS AUTH_SYS does not verify remote UID/GID claims. None is encrypted, and HTTP does not provide HTTPS. Enable uploads only for trusted clients. File access remains subject to the server process's host permissions.
 - Bind to the server's specific interface for LAN access. Low ports may require privileges; Filemux does not elevate itself, change firewall rules or replace system rpcbind. TFTP firewall rules must allow dynamic data ports too.
 - Native file creation times are required. Windows currently requires NTFS and exposes virtual `0555` permissions, not full POSIX/ACL semantics; Linux file reads rely on `/proc/self/fd`. Directory scans are limited to 10,000 entries. Read-only rootfs writes need client-side tmpfs/OverlayFS or equivalent.
 - No DHCP/PXE, NFSv2/v4, NLM/statd, Kerberos or rootfs image conversion. U-Boot hardware and complete diskless boot have not been validated.
@@ -121,7 +131,7 @@ Rust 编写的跨平台文件共享服务，面向可信局域网中的启动文
 
 | 协议 | 传输与默认端口 | 访问权限 |
 | --- | --- | --- |
-| HTTP | TCP 8080 | 只读：目录浏览、GET、HEAD、单段字节 Range。 |
+| HTTP | TCP 8080 | 目录浏览、GET、HEAD、单段字节 Range；可单独开启浏览器与 PUT 上传，不覆盖已有文件。 |
 | TFTP | UDP 69；数据使用动态 UDP 端口 | octet 传输，支持 `blksize`、`timeout`、`tsize`；上传默认关闭，开启后也不覆盖已有文件。 |
 | NFSv3 / MOUNTv3 | TCP/UDP 2049；可选 portmapper v2 使用 111 | 只读，支持持久文件句柄与子目录挂载。 |
 
@@ -153,13 +163,23 @@ filemux --config filemux.toml serve
 
 将文件放入 `share`，访问 <http://127.0.0.1:8080/>。初始配置**仅启用 HTTP**，只监听本机；按 Ctrl+C 停止。`init` 不覆盖已有配置，`check` 不启动服务或检查端口是否可用。完整配置见 [配置示例](examples/filemux.toml)，相对路径以配置文件所在目录为准。
 
+启用 HTTP 上传后，可使用目录页上传，或在另一个终端执行上传命令：
+
+```sh
+filemux --config filemux.toml serve --allow-http-upload
+# 在另一个终端中执行：
+curl --upload-file ./example.bin http://127.0.0.1:8080/example.bin
+```
+
+HTTP 上传默认关闭。需要保存此设置时，在 `[http]` 中配置 `allow_upload = true`，或勾选桌面界面 HTTP 设置中的**允许 HTTP 上传**。目录页每次向当前目录上传一个文件；`PUT /path/file` 接收原始文件内容，父目录必须已存在。单文件默认上限为 1 GiB，可通过 `http.max_upload_bytes` 设置。PUT 成功返回 `201`，目录表单使用 multipart POST，成功后以 `303` 跳转回目录。目标已存在返回 `409`，超出大小上限返回 `413`。未完成的上传不会对外显示；不支持分段或断点续传。
+
 在本机高端口启用 TFTP 上传：
 
 ```sh
 filemux --config filemux.toml serve --tftp-bind 127.0.0.1:1069 --allow-upload
 ```
 
-参数仅覆盖本次运行；`--no-http` 禁用 HTTP，`--json` 输出实际就绪地址。开启 TFTP 上传不改变 HTTP、NFS 的只读权限。
+参数仅覆盖本次运行；`--no-http` 禁用 HTTP，`--json` 输出实际就绪地址。`--allow-upload` 仅控制 TFTP，`--allow-http-upload` 仅控制 HTTP；NFS 始终只读。
 
 ### 桌面界面
 
@@ -188,7 +208,7 @@ sudo mount -t nfs -o ro,vers=3,proto=tcp,mountproto=tcp,port=12049,mountport=120
 
 ### 安全与限制
 
-- **仅用于可信网络。** TFTP 无用户认证，NFS AUTH_SYS 不验证远程 UID/GID 声明，两者均不加密，HTTP 不提供 HTTPS。实际文件访问仍受服务端进程的宿主权限限制。
+- **仅用于可信网络。** HTTP、TFTP 均无用户认证，NFS AUTH_SYS 不验证远程 UID/GID 声明。三种协议均不加密，HTTP 不提供 HTTPS；只应向可信客户端开放上传。实际文件访问仍受服务端进程的宿主权限限制。
 - 局域网共享应绑定具体网卡 IP。低端口可能需要额外权限；程序不自动提权、改防火墙或替换系统 rpcbind。TFTP 防火墙规则还需放行动态数据端口。
 - 文件系统需提供原生创建时间。Windows 当前要求 NTFS，对外虚拟权限为 `0555`，不等价于完整 POSIX/ACL；Linux 文件读取依赖 `/proc/self/fd`。目录扫描上限为 10,000 项；只读 rootfs 的写入需由客户端通过 tmpfs、OverlayFS 等处理。
 - 不提供 DHCP/PXE、NFSv2/v4、NLM/statd、Kerberos 或 rootfs 镜像转换。U-Boot 真机与完整无盘启动尚未验证。

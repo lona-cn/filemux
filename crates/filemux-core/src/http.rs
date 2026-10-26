@@ -1,4 +1,4 @@
-//! Read-only HTTP/1 file serving through the shared rooted filesystem capability.
+//! HTTP/1 file serving and opt-in uploads through the shared rooted filesystem.
 //!
 //! Files are streamed, directory listings are limited to 10,000 entries, and every
 //! accepted connection belongs to the server's task set. Regular files (including
@@ -6,15 +6,18 @@
 //! and directory symlinks are refused.
 //! Single byte ranges are supported. Multipart ranges and unknown range units are
 //! ignored, and conditional requests/validators are not implemented.
+//! PUT creates one file; multipart POST uploads one file into an existing directory.
+//! Uploads are streamed, size-limited and published without replacing existing entries.
 
-use crate::fs::{DirEntry, NodeKind, SharedFs};
+use crate::fs::{DirEntry, FsError, NodeKind, SharedFs, Upload};
 use crate::{Endpoint, EventSender, HttpConfig, Protocol, ServerHandle, Transport, emit};
 use anyhow::{Context, Result, ensure};
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, Method, Request, StatusCode, header};
+use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, State};
+use axum::http::{HeaderMap, Method, Request, StatusCode, header, uri::Authority};
 use axum::response::Response;
+use http_body_util::BodyExt;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
@@ -23,18 +26,21 @@ use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
+const MAX_MULTIPART_OVERHEAD: u64 = 64 * 1024;
 
 #[derive(Clone)]
 struct AppState {
     fs: Arc<SharedFs>,
     events: EventSender,
+    allow_upload: bool,
+    max_upload_bytes: u64,
 }
 
 /// Bind the configured address before returning a handle owning all connections.
@@ -48,6 +54,7 @@ pub async fn start(
         (1..=4096).contains(&config.max_connections),
         "HTTP max_connections must be 1–4096"
     );
+    ensure!(config.max_upload_bytes > 0, "invalid HTTP upload limit");
     let listener = TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("binding HTTP to {}", config.bind))?;
@@ -56,10 +63,21 @@ pub async fn start(
         .context("reading HTTP listen address")?;
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
-    let app = Router::new().fallback(request).with_state(AppState {
-        fs,
-        events: events.clone(),
-    });
+    let body_limit = usize::try_from(
+        config
+            .max_upload_bytes
+            .saturating_add(MAX_MULTIPART_OVERHEAD),
+    )
+    .unwrap_or(usize::MAX);
+    let app = Router::new()
+        .fallback(request)
+        .layer(DefaultBodyLimit::max(body_limit))
+        .with_state(AppState {
+            fs,
+            events: events.clone(),
+            allow_upload: config.allow_upload,
+            max_upload_bytes: config.max_upload_bytes,
+        });
     emit(
         &events,
         Protocol::Http,
@@ -121,27 +139,284 @@ pub async fn start(
 }
 
 async fn request(State(state): State<AppState>, request: Request<Body>) -> Response {
-    let method = request.method();
-    let head = method == Method::HEAD;
-    let response = if method != Method::GET && !head {
-        let mut response = message(StatusCode::METHOD_NOT_ALLOWED, "Read-only service\n", false);
-        response
-            .headers_mut()
-            .insert(header::ALLOW, "GET, HEAD".parse().unwrap());
-        response
-    } else {
-        match decode_path(request.uri().path()) {
-            Ok(path) => serve(&state, path, request.headers(), head).await,
-            Err(status) => message(status, "Unsafe or malformed path\n", head),
-        }
-    };
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let response = dispatch(&state, request).await;
     emit(
         &state.events,
         Protocol::Http,
-        format!("{} {}: {}", method, request.uri().path(), response.status()),
+        format!("{} {}: {}", method, uri.path(), response.status()),
         response.status().is_server_error(),
     );
     response
+}
+
+async fn dispatch(state: &AppState, request: Request<Body>) -> Response {
+    let method = request.method();
+    let head = method == Method::HEAD;
+    let write = method == Method::PUT || method == Method::POST;
+    if method != Method::GET && !head && (!write || !state.allow_upload) {
+        let mut response = message(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "Method not allowed\n",
+            false,
+        );
+        let allowed = if state.allow_upload {
+            "GET, HEAD, PUT, POST"
+        } else {
+            "GET, HEAD"
+        };
+        response
+            .headers_mut()
+            .insert(header::ALLOW, allowed.parse().unwrap());
+        return response;
+    }
+    let path = match decode_path(request.uri().path()) {
+        Ok(path) => path,
+        Err(status) => return message(status, "Unsafe or malformed path\n", head),
+    };
+    if !write {
+        return serve(state, path, request.headers(), head).await;
+    }
+    if !same_origin(request.headers()) {
+        return upload_message(StatusCode::FORBIDDEN);
+    }
+    let result = if method == Method::PUT {
+        if path.relative.as_os_str().is_empty() || request.uri().path().ends_with('/') {
+            return upload_message(StatusCode::BAD_REQUEST);
+        }
+        upload_put(state, path, request).await
+    } else {
+        upload_form(state, path, request).await
+    };
+    result.unwrap_or_else(upload_message)
+}
+
+fn same_origin(headers: &HeaderMap) -> bool {
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|value| value == "cross-site")
+    {
+        return false;
+    }
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let Some(origin) = origins.next() else {
+        return true;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+    let Some(origin) = origin
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<axum::http::Uri>().ok())
+    else {
+        return false;
+    };
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<Authority>().ok())
+    else {
+        return false;
+    };
+    origin.scheme_str() == Some("http")
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && origin.authority().is_some_and(|authority| {
+            authority.host().eq_ignore_ascii_case(host.host())
+                && authority.port_u16().unwrap_or(80) == host.port_u16().unwrap_or(80)
+        })
+}
+
+// Field order closes the writer before Upload removes its private temporary entry.
+struct PendingUpload {
+    writer: tokio::fs::File,
+    upload: Upload,
+    bytes: u64,
+}
+
+impl PendingUpload {
+    async fn begin(state: &AppState, path: PathBuf) -> std::result::Result<Self, StatusCode> {
+        let fs = state.fs.clone();
+        tokio::task::spawn_blocking(move || {
+            let upload = fs.begin_upload(&path)?;
+            let writer = tokio::fs::File::from_std(upload.writer()?);
+            Ok::<_, FsError>(Self {
+                writer,
+                upload,
+                bytes: 0,
+            })
+        })
+        .await
+        .map_err(|error| upload_status(state, FsError::State(error.to_string())))?
+        .map_err(|error| upload_status(state, error))
+    }
+
+    async fn write(
+        &mut self,
+        state: &AppState,
+        chunk: &[u8],
+    ) -> std::result::Result<(), StatusCode> {
+        self.bytes = self
+            .bytes
+            .checked_add(chunk.len() as u64)
+            .filter(|size| *size <= state.max_upload_bytes)
+            .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
+        self.writer
+            .write_all(chunk)
+            .await
+            .map_err(|error| upload_status(state, error.into()))
+    }
+
+    async fn commit(self, state: &AppState) -> std::result::Result<(), StatusCode> {
+        let Self {
+            mut writer, upload, ..
+        } = self;
+        writer
+            .flush()
+            .await
+            .map_err(|error| upload_status(state, error.into()))?;
+        drop(writer);
+        tokio::task::spawn_blocking(move || upload.commit())
+            .await
+            .map_err(|error| upload_status(state, FsError::State(error.to_string())))?
+            .map_err(|error| upload_status(state, error))
+    }
+}
+
+fn upload_status(state: &AppState, error: FsError) -> StatusCode {
+    let status = fs_status(error.kind());
+    if status.is_server_error() {
+        emit(
+            &state.events,
+            Protocol::Http,
+            format!("Upload failed: {error}"),
+            true,
+        );
+    }
+    status
+}
+
+fn upload_message(status: StatusCode) -> Response {
+    let text = match status {
+        StatusCode::BAD_REQUEST => "Invalid or incomplete upload request\n",
+        StatusCode::FORBIDDEN => "Upload request is not permitted\n",
+        StatusCode::NOT_FOUND => "Upload directory not found\n",
+        StatusCode::CONFLICT => "Target already exists; files cannot be overwritten\n",
+        StatusCode::PAYLOAD_TOO_LARGE => "Upload exceeds the size limit\n",
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+            "Use multipart/form-data to upload into a directory\n"
+        }
+        _ => "Upload failed\n",
+    };
+    message(status, text, false)
+}
+
+fn declared_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
+async fn upload_put(
+    state: &AppState,
+    path: ResolvedPath,
+    request: Request<Body>,
+) -> std::result::Result<Response, StatusCode> {
+    if request.headers().contains_key(header::CONTENT_RANGE) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if declared_length(request.headers()).is_some_and(|size| size > state.max_upload_bytes) {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let mut upload = PendingUpload::begin(state, path.relative).await?;
+    let mut body = request.into_body();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+        if let Ok(chunk) = frame.into_data() {
+            upload.write(state, &chunk).await?;
+        }
+    }
+    upload.commit(state).await?;
+    let mut response = message(StatusCode::CREATED, "Upload complete\n", false);
+    response
+        .headers_mut()
+        .insert(header::LOCATION, path.encoded.parse().unwrap());
+    Ok(response)
+}
+
+async fn upload_form(
+    state: &AppState,
+    mut path: ResolvedPath,
+    request: Request<Body>,
+) -> std::result::Result<Response, StatusCode> {
+    let multipart = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("multipart/form-data"));
+    if !multipart {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    if declared_length(request.headers()).is_some_and(|size| {
+        size > state
+            .max_upload_bytes
+            .saturating_add(MAX_MULTIPART_OVERHEAD)
+    }) {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let mut multipart = Multipart::from_request(request, &())
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let mut field = multipart
+        .next_field()
+        .await
+        .map_err(multipart_status)?
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    if field.name() != Some("file") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let name = field
+        .file_name()
+        .filter(|name| safe_component(name.as_bytes()))
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    path.relative.push(name);
+    let mut upload = PendingUpload::begin(state, path.relative).await?;
+    while let Some(chunk) = field.chunk().await.map_err(multipart_status)? {
+        upload.write(state, &chunk).await?;
+    }
+    drop(field);
+    // Reject extra parts before publication, even after a valid first file.
+    if multipart
+        .next_field()
+        .await
+        .map_err(multipart_status)?
+        .is_some()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    upload.commit(state).await?;
+    if path.encoded != "/" {
+        path.encoded.push('/');
+    }
+    let mut response = message(StatusCode::SEE_OTHER, "Upload complete\n", false);
+    response
+        .headers_mut()
+        .insert(header::LOCATION, path.encoded.parse().unwrap());
+    Ok(response)
+}
+
+fn multipart_status(error: axum::extract::multipart::MultipartError) -> StatusCode {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        StatusCode::PAYLOAD_TOO_LARGE
+    } else {
+        StatusCode::BAD_REQUEST
+    }
 }
 
 struct ResolvedPath {
@@ -261,7 +536,12 @@ async fn serve(state: &AppState, path: ResolvedPath, headers: &HeaderMap, head: 
         Ok(Ok(Resource::File(file, size))) => {
             serve_file(file, size, headers, head, &state.events).await
         }
-        Ok(Ok(Resource::Directory(entries))) => directory(entries, &path.encoded, head),
+        Ok(Ok(Resource::Directory(entries))) => directory(
+            entries,
+            &path.encoded,
+            head,
+            state.allow_upload.then_some(state.max_upload_bytes),
+        ),
         Ok(Ok(Resource::Refused)) => message(
             StatusCode::FORBIDDEN,
             "Only regular files and directories are served\n",
@@ -421,7 +701,12 @@ fn select_range(headers: &HeaderMap, size: u64) -> std::result::Result<Option<(u
     Ok(Some((start, end)))
 }
 
-fn directory(mut entries: Vec<DirEntry>, encoded_path: &str, head: bool) -> Response {
+fn directory(
+    mut entries: Vec<DirEntry>,
+    encoded_path: &str,
+    head: bool,
+    upload_limit: Option<u64>,
+) -> Response {
     if entries.len() > MAX_DIRECTORY_ENTRIES {
         return message(
             StatusCode::INSUFFICIENT_STORAGE,
@@ -431,8 +716,18 @@ fn directory(mut entries: Vec<DirEntry>, encoded_path: &str, head: bool) -> Resp
     }
     entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     let mut html = String::from(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Filemux directory</title></head><body><h1>Directory</h1><ul>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Filemux directory</title></head><body><h1>Directory</h1>",
     );
+    if let Some(limit) = upload_limit {
+        let slash = if encoded_path == "/" { "" } else { "/" };
+        html.push_str(&format!(
+            "<form method=\"post\" action=\"{encoded_path}{slash}\" enctype=\"multipart/form-data\">\
+             <p>上传文件（最大 {limit} 字节，不覆盖已有文件）</p>\
+             <input type=\"file\" name=\"file\" aria-label=\"选择文件\" required>\
+             <button type=\"submit\">上传</button></form>"
+        ));
+    }
+    html.push_str("<ul>");
     if encoded_path != "/" {
         let parent = encoded_path
             .rsplit_once('/')
@@ -493,7 +788,7 @@ fn directory(mut entries: Vec<DirEntry>, encoded_path: &str, head: bool) -> Resp
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
             .parse()
             .unwrap(),
     );
