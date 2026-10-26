@@ -2,6 +2,7 @@
 /.filemux-smoke/
 /filemux.toml
 /.filemux-state/
+.filemux-gui.ron
 /share/
 *.log
 .DS_Store
