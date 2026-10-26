@@ -1,5 +1,5 @@
+use filemux_core::fs::SharedFs;
 use filemux_core::{HttpConfig, ServerHandle};
-use filemux_fs::SharedFs;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Client, StatusCode, header};
 use std::sync::Arc;
@@ -28,7 +28,7 @@ impl Fixture {
 
     async fn start(&self, max_connections: usize) -> ServerHandle {
         let (events, _) = tokio::sync::broadcast::channel(32);
-        filemux_http::start(
+        filemux_core::http::start(
             self.fs.clone(),
             HttpConfig {
                 enabled: false,

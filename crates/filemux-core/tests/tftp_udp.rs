@@ -1,5 +1,5 @@
+use filemux_core::fs::SharedFs;
 use filemux_core::{ServerHandle, TftpConfig};
-use filemux_fs::SharedFs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,7 +38,7 @@ impl Fixture {
         let (events, receiver) = tokio::sync::broadcast::channel(16);
         // Absence of event receivers must never prevent a transfer.
         drop(receiver);
-        filemux_tftp::start(self.fs.clone(), config, events)
+        filemux_core::tftp::start(self.fs.clone(), config, events)
             .await
             .unwrap()
     }
@@ -269,7 +269,7 @@ async fn peer_error_silently_aborts_upload_and_removes_private_data() {
     let fixture = Fixture::new();
     std::fs::write(fixture.root.join("file"), b"still available").unwrap();
     let (events, mut receiver) = tokio::sync::broadcast::channel(16);
-    let server = filemux_tftp::start(
+    let server = filemux_core::tftp::start(
         fixture.fs.clone(),
         TftpConfig {
             allow_upload: true,

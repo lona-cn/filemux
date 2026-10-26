@@ -1,4 +1,4 @@
-use filemux_fs::{FsError, MAX_DIRECTORY_ENTRIES, NodeKind, SharedFs};
+use filemux_core::fs::{FsError, MAX_DIRECTORY_ENTRIES, NodeKind, SharedFs};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;

@@ -1324,12 +1324,11 @@ dependencies = [
 
 [[package]]
 name = "filemux-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
  "filemux-core",
- "filemux-engine",
  "reqwest",
  "serde_json",
  "tempfile",
@@ -1339,101 +1338,41 @@ dependencies = [
 
 [[package]]
 name = "filemux-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
+ "axum",
+ "cap-fs-ext",
+ "cap-std",
  "directories",
+ "fs2",
+ "hyper",
+ "hyper-util",
+ "junction",
+ "libc",
+ "percent-encoding",
+ "reqwest",
+ "rusqlite",
  "serde",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "toml",
-]
-
-[[package]]
-name = "filemux-engine"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "filemux-core",
- "filemux-fs",
- "filemux-http",
- "filemux-nfs",
- "filemux-tftp",
- "reqwest",
- "serde",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "filemux-fs"
-version = "0.1.0"
-dependencies = [
- "cap-fs-ext",
- "cap-std",
- "junction",
- "libc",
- "rusqlite",
- "tempfile",
- "thiserror 2.0.21",
  "uuid",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "filemux-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "eframe",
  "filemux-core",
- "filemux-engine",
  "rfd",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "filemux-http"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "filemux-core",
- "filemux-fs",
- "hyper",
- "hyper-util",
- "percent-encoding",
- "reqwest",
- "tempfile",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "filemux-nfs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "filemux-core",
- "filemux-fs",
- "fs2",
- "tempfile",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "filemux-tftp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "filemux-core",
- "filemux-fs",
- "tempfile",
  "tokio",
  "tokio-util",
 ]

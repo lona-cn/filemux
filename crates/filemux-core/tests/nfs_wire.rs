@@ -1,6 +1,6 @@
 //! Independent client packets: no server codec or internal dispatcher is used here.
-use filemux_core::{NfsConfig, ServerHandle, Transport};
-use filemux_fs::SharedFs;
+use filemux_core::fs::SharedFs;
+use filemux_core::{NfsConfig, ServerHandle, Transport, nfs};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,9 +161,7 @@ async fn fixture_with_export(export: &str) -> (tempfile::TempDir, Arc<SharedFs>,
         ..NfsConfig::default()
     };
     let (events, _) = tokio::sync::broadcast::channel(8);
-    let server = filemux_nfs::start(fs.clone(), config, events)
-        .await
-        .unwrap();
+    let server = nfs::start(fs.clone(), config, events).await.unwrap();
     (temp, fs, server)
 }
 
@@ -867,7 +865,7 @@ async fn old_file_and_directory_handles_survive_reopening_persistent_state() {
         ..NfsConfig::default()
     };
     let (events, _) = tokio::sync::broadcast::channel(8);
-    let server = filemux_nfs::start(fs, config, events).await.unwrap();
+    let server = nfs::start(fs, config, events).await.unwrap();
     // No MOUNT or LOOKUP after reopening. Parent also tests a genuine CLI process restart.
     for transport in [Transport::Tcp, Transport::Udp] {
         let address = endpoint(&server, "nfs", transport);

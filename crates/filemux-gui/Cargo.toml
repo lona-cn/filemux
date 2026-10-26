@@ -3,19 +3,22 @@ name = "filemux-gui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish = false
+publish.workspace = true
 repository.workspace = true
 license.workspace = true
 license-file.workspace = true
 readme.workspace = true
+description = "Native desktop HTTP, TFTP, and NFSv3 file-sharing server"
+keywords = ["filemux", "file-sharing", "http", "tftp", "nfs"]
+categories = ["gui", "network-programming", "filesystem"]
+include = ["src/**", "assets/fonts/NotoSansSC-Regular.otf", "assets/fonts/OFL.txt"]
 
 [[bin]]
 name = "filemux-gui"
 path = "src/main.rs"
 
 [dependencies]
-filemux-core = { version = "0.1.0", path = "../filemux-core" }
-filemux-engine = { version = "0.1.0", path = "../filemux-engine" }
+filemux-core = { version = "0.1.1", path = "../filemux-core" }
 anyhow.workspace = true
 eframe.workspace = true
 clap.workspace = true

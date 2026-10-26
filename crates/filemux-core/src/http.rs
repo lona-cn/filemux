@@ -7,14 +7,14 @@
 //! Single byte ranges are supported. Multipart ranges and unknown range units are
 //! ignored, and conditional requests/validators are not implemented.
 
+use crate::fs::{DirEntry, NodeKind, SharedFs};
+use crate::{Endpoint, EventSender, HttpConfig, Protocol, ServerHandle, Transport, emit};
 use anyhow::{Context, Result, ensure};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::response::Response;
-use filemux_core::{Endpoint, EventSender, HttpConfig, Protocol, ServerHandle, Transport, emit};
-use filemux_fs::{DirEntry, NodeKind, SharedFs};
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
@@ -240,7 +240,7 @@ enum Resource {
 async fn serve(state: &AppState, path: ResolvedPath, headers: &HeaderMap, head: bool) -> Response {
     let fs = state.fs.clone();
     let relative = path.relative;
-    let resource = tokio::task::spawn_blocking(move || -> filemux_fs::Result<Resource> {
+    let resource = tokio::task::spawn_blocking(move || -> crate::fs::Result<Resource> {
         let node = fs.lookup_path(&relative)?;
         match node.kind {
             NodeKind::File | NodeKind::Symlink => {

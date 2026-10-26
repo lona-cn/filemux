@@ -17,8 +17,7 @@ name = "filemux"
 path = "src/main.rs"
 
 [dependencies]
-filemux-core = { version = "0.1.0", path = "../filemux-core" }
-filemux-engine = { version = "0.1.0", path = "../filemux-engine" }
+filemux-core = { version = "0.1.1", path = "../filemux-core" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

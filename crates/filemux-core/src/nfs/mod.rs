@@ -25,10 +25,10 @@ mod nfs;
 mod rpc;
 mod xdr;
 
+use self::rpc::{Dispatcher, Service};
+use crate::fs::SharedFs;
+use crate::{Endpoint, EventSender, NfsConfig, Protocol, ServerHandle, Transport, emit};
 use anyhow::{Context, Result, ensure};
-use filemux_core::{Endpoint, EventSender, NfsConfig, Protocol, ServerHandle, Transport, emit};
-use filemux_fs::SharedFs;
-use rpc::{Dispatcher, Service};
 use std::future::pending;
 use std::io;
 use std::net::SocketAddr;

@@ -2,18 +2,13 @@
 resolver = "3"
 members = [
     "crates/filemux-core",
-    "crates/filemux-fs",
-    "crates/filemux-http",
-    "crates/filemux-tftp",
-    "crates/filemux-nfs",
-    "crates/filemux-engine",
     "crates/filemux-cli",
     "crates/filemux-gui",
 ]
 default-members = ["crates/filemux-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 publish = ["crates-io"]

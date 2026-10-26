@@ -1,7 +1,7 @@
 //! NFSv3 wire procedures from RFC 1813. All methods run on bounded blocking workers.
-use crate::rpc::Dispatcher;
-use crate::xdr::{Malformed, Reader, Writer};
-use filemux_fs::{Node, NodeKind, SharedFs};
+use super::rpc::Dispatcher;
+use super::xdr::{Malformed, Reader, Writer};
+use crate::fs::{FsError, Node, NodeKind, SharedFs};
 use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -39,11 +39,11 @@ fn handle_id(input: &mut Reader<'_>, fs: &SharedFs) -> Result<Result<u64, u32>, 
     )))
 }
 
-fn error(error: &filemux_fs::FsError) -> u32 {
+fn error(error: &FsError) -> u32 {
     match error {
-        filemux_fs::FsError::Stale => STALE,
-        filemux_fs::FsError::DirectoryTooLarge => IO,
-        filemux_fs::FsError::State(_) | filemux_fs::FsError::Database(_) => 10006,
+        FsError::Stale => STALE,
+        FsError::DirectoryTooLarge => IO,
+        FsError::State(_) | FsError::Database(_) => 10006,
         _ => io_error(error.kind()),
     }
 }

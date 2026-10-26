@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use eframe::egui;
+use filemux_core::engine::{Engine, ServiceSnapshot};
 use filemux_core::{Config, Event, Protocol, ServiceState};
-use filemux_engine::{Engine, ServiceSnapshot};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -83,7 +83,7 @@ impl Worker {
         let cancel = CancellationToken::new();
         let stop = cancel.clone();
         let shared = Arc::clone(&state);
-        let thread = std::thread::Builder::new().name("filemux-engine".into()).spawn(move || {
+        let thread = std::thread::Builder::new().name("filemux-core".into()).spawn(move || {
             runtime.block_on(async {
                 let mut engine = Engine::new(config.clone());
                 let mut events = engine.subscribe();

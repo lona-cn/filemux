@@ -11,11 +11,22 @@ Rust 用户态文件共享服务，提供 `filemux` 命令行程序和 egui 原�
 需要 Rust 工具链及对应平台的 C 编译器和链接环境；SQLite 随源码编译：
 
 ```sh
-cargo install filemux-cli --version 0.1.0 --locked
+cargo install filemux-cli --version 0.1.1 --locked
 filemux --help
 ```
 
 Cargo 包名是 **`filemux-cli`**，安装后的命令名是 **`filemux`**。默认安装到当前用户的 `$CARGO_HOME/bin`（未设置时通常为 `~/.cargo/bin`，Windows 为 `%USERPROFILE%\.cargo\bin`），请确认该目录在 `PATH` 中。此方式只编译 CLI，不引入 GUI、窗口或 GPU 依赖。
+
+### 从 crates.io 安装 GUI
+
+```sh
+cargo install filemux-gui --version 0.1.1 --locked
+filemux-gui --help
+```
+
+GUI 的 Cargo 包名和命令名均为 **`filemux-gui`**，安装位置与 CLI 相同。`filemux-core` 是两者共用的库，不是可安装运行的程序。
+
+GUI 从源码编译，需要 Rust 工具链及原生构建依赖：Windows 需要 MSVC C/C++ 编译和链接环境，macOS 需要 Xcode Command Line Tools，Linux 需要 C/C++ 构建工具、`pkg-config` 以及 eframe 所需的 X11/Wayland 开发库。运行还需要系统图形环境与图形驱动；`cargo install` 不会安装这些系统组件。SQLite 随源码编译，中文字体及其 OFL 许可已随 GUI 源码包提供。
 
 ### 下载 GitHub Release 二进制
 
@@ -31,6 +42,8 @@ Cargo 包名是 **`filemux-cli`**，安装后的命令名是 **`filemux`**。默
 下载对应压缩包，并按同一 Release 的 `SHA256SUMS` 校验。压缩包命名为 `filemux-<tag>-<target>`，包含 CLI、GUI、README、配置示例、阶段文档与中文字体许可；Unix 二进制保留执行权限。解压后运行 `filemux` / `filemux-gui`，Windows 对应 `.exe`；不需要安装 Rust。若未将解压目录加入 `PATH`，请使用可执行文件的完整或相对路径。
 
 这些压缩包不是安装器，不包含系统图形运行环境，也没有 Windows 代码签名或 Apple Developer ID 签名、公证。Linux 包在 Ubuntu 22.04 构建，不是完全静态二进制。
+
+上表及下载链接对应已有的 **v0.1.0**，不是 0.1.1 二进制发布。更新源码或发布 crates.io 的 0.1.1 包不会自动创建 GitHub Release；只有为对应提交创建并推送新的 `v0.1.1` tag、且 Release 工作流成功完成后，才会有该版本的二进制包。
 
 ### 从源码开发
 
@@ -86,7 +99,7 @@ filemux --config filemux.toml serve --tftp-bind 127.0.0.1:1069 --allow-upload
 filemux-gui --config filemux.toml
 ```
 
-GUI 复用 CLI 的配置和 engine，不会另写一套协议服务；可以使用上面 `init` 生成的配置。打开窗口不会自动启动服务：
+GUI 复用 CLI 的配置和 `filemux-core::engine` 服务管理，不会另写一套协议服务；可以使用上面 `init` 生成的配置。打开窗口不会自动启动服务：
 
 1. 选择共享目录；首次使用时检查持久状态目录是否位于共享范围之外。
 2. 设置监听地址、端口和 TFTP 上传开关，点击“保存设置”。
@@ -232,33 +245,30 @@ cargo build --workspace --locked
 
 测试使用临时目录、本机 TCP/UDP 和空闲高端口，不要求目标板卡、系统 NFS 挂载或管理员权限。进程级测试运行实际 CLI，在结束并重新启动服务后直接复用旧文件和目录句柄；不通过重新挂载获取新句柄来替代恢复验证。
 
-Windows、Linux、macOS 三平台 CI 已全部通过，四平台 release 二进制也已完成构建并发布。具体执行结果、失败修复和后续动态记录见 [docs/progress.md](https://github.com/lona-cn/filemux/blob/master/docs/progress.md)。这些结果不包含 Linux/macOS GUI 窗口、U-Boot 真机或完整无盘启动验证。
+已有 v0.1.0 的 Windows、Linux、macOS 三平台 CI 已全部通过，四平台 release 二进制也已完成构建并发布；这不表示已经创建 0.1.1 二进制 Release。具体执行结果、失败修复和后续动态记录见 [docs/progress.md](https://github.com/lona-cn/filemux/blob/master/docs/progress.md)。这些结果不包含 Linux/macOS GUI 窗口、U-Boot 真机或完整无盘启动验证。
 
 ### Workspace 结构
 
 | Crate | 内容 |
 | --- | --- |
-| `filemux-core` | 配置、公共状态、事件和服务生命周期。 |
-| `filemux-fs` | 受限文件访问、元数据、持久身份与上传发布。 |
-| `filemux-http` | 只读 HTTP 服务。 |
-| `filemux-tftp` | TFTP 上传/下载状态机。 |
-| `filemux-nfs` | XDR/RPC、NFSv3、MOUNTv3、portmapper。 |
-| `filemux-engine` | CLI/GUI 共用的服务管理。 |
+| `filemux-core` | CLI/GUI 共享库：配置、公共状态、事件、服务生命周期，以及受限文件系统访问、元数据、持久身份、上传发布、HTTP、TFTP、NFSv3/MOUNTv3/portmapper 和服务管理。 |
 | `filemux-cli` | `filemux` 命令行程序。 |
-| `filemux-gui` | `filemux-gui` egui 桌面程序。 |
+| `filemux-gui` | `filemux-gui` egui 桌面程序，包含中文字体及 OFL 许可。 |
+
+Workspace 仅包含这三个 crate。文件系统与协议实现分别位于 `filemux-core` 的 `fs`、`http`、`tftp`、`nfs` 模块；CLI/GUI 通过 `filemux_core::engine::Engine` 共享服务管理。
 
 ## 发布维护
 
 ### crates.io
 
-crates.io 发布范围为 `filemux-core`、`filemux-fs`、`filemux-http`、`filemux-tftp`、`filemux-nfs`、`filemux-engine`、`filemux-cli` 共 7 个 crate；`filemux-gui` 保持 `publish = false`，通过 GitHub Release 或源码使用。用户安装 CLI 时使用包名 `filemux-cli`，运行时使用命令名 `filemux`。
+crates.io 发布和维护范围仅为 `filemux-core`、`filemux-cli`、`filemux-gui` 三个 crate，版本统一为 **0.1.1**。CLI 使用包名 `filemux-cli` 安装、命令名 `filemux` 运行；GUI 的包名与命令名均为 `filemux-gui`。
 
-三个协议 crate 均依赖 `core` 和 `fs`；`engine` 还直接依赖 `core`、`fs`，`cli` 还直接依赖 `core`。发布顺序为 `core` / `fs` → 三个协议 crate → `engine` → `cli`，由 Cargo 的 workspace 发布处理依赖顺序。
+`filemux-cli` 和 `filemux-gui` 均直接依赖 `filemux-core`；文件系统、协议和服务管理不再作为独立 crate 发布。发布顺序为 `filemux-core` → CLI / GUI，由 Cargo 的 workspace 发布处理依赖顺序。
 
 发布前应确认版本与内部依赖版本一致、工作区变更已提交、README 和许可证已进入各源码包，并完成上面的开发验证。以下维护命令使用与 CI 一致的 Cargo 1.99.0，在仓库根目录执行：
 
 ```sh
-cargo publish --workspace --exclude filemux-gui --registry crates-io --locked --dry-run
+cargo publish --workspace --registry crates-io --locked --dry-run
 ```
 
 首次发布需要直连 crates.io 的 registry。若个人 Cargo 配置存在 `source.*.replace-with` 镜像替换，应使用独立的 `CARGO_HOME` 和配置完成发布；仅指定 `--registry crates-io` 不会取消源替换，可能导致 Cargo 去镜像查找尚未发布的内部依赖。
@@ -266,7 +276,7 @@ cargo publish --workspace --exclude filemux-gui --registry crates-io --locked --
 检查生成的 `.crate` 内容与 dry-run 结果后，已获得发布权限的维护者再执行实际发布：
 
 ```sh
-cargo publish --workspace --exclude filemux-gui --registry crates-io --locked
+cargo publish --workspace --registry crates-io --locked
 ```
 
 crates.io 版本发布后不可覆盖；后续修改应使用新版本。crates.io 与 GitHub Release 是独立流程，GitHub Release 工作流不会上传 Cargo 包。
@@ -285,4 +295,4 @@ crates.io 版本发布后不可覆盖；后续修改应使用新版本。crates.
 
 项目源码采用 **MIT OR Apache-2.0** 双许可证，可选择其中任一许可证使用；完整条款见 [LICENSE](https://github.com/lona-cn/filemux/blob/master/LICENSE)。
 
-内置中文字体为未修改的 Noto Sans SC Regular，来自 [Noto CJK 官方字体仓库](https://github.com/notofonts/noto-cjk/tree/main/Sans/SubsetOTF/SC)，单独遵循 **SIL Open Font License 1.1**，条款见 [assets/fonts/OFL.txt](https://github.com/lona-cn/filemux/blob/master/assets/fonts/OFL.txt)。源码的双许可证不替代字体许可。
+内置中文字体为未修改的 Noto Sans SC Regular，来自 [Noto CJK 官方字体仓库](https://github.com/notofonts/noto-cjk/tree/main/Sans/SubsetOTF/SC)，单独遵循 **SIL Open Font License 1.1**，条款见 [crates/filemux-gui/assets/fonts/OFL.txt](https://github.com/lona-cn/filemux/blob/master/crates/filemux-gui/assets/fonts/OFL.txt)。源码的双许可证不替代字体许可。

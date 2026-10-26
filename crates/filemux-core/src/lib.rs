@@ -1,7 +1,13 @@
-//! Configuration, lifecycle and bounded event types shared by the frontends and servers.
+//! Shared file access, HTTP/TFTP/NFSv3 servers, configuration and service management.
 
 mod config;
 mod service;
+
+pub mod engine;
+pub mod fs;
+pub mod http;
+pub mod nfs;
+pub mod tftp;
 
 pub use config::{Config, HttpConfig, NfsConfig, TftpConfig, default_config_path};
 pub use service::{

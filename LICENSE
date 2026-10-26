@@ -3,9 +3,9 @@ or the Apache License, Version 2.0. The full text of both licenses follows.
 
 Copyright 2026 Filemux contributors
 
-The bundled Noto fonts in assets/fonts are excluded from this dual license.
-They remain licensed under the SIL Open Font License, Version 1.1; see
-assets/fonts/OFL.txt for their license and copyright notices.
+The bundled Noto fonts in crates/filemux-gui/assets/fonts are excluded from
+this dual license. They remain licensed under the SIL Open Font License,
+Version 1.1; see crates/filemux-gui/assets/fonts/OFL.txt for their notices.
 
 ===============================================================================
 MIT License

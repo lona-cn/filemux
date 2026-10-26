@@ -14,7 +14,7 @@
 
 ### 2.1 项目与平台
 
-- 使用 Rust，采用 Cargo workspace、多 crate 结构。
+- 使用 Rust，采用 Cargo workspace，仅保留 `filemux-core`、`filemux-cli`、`filemux-gui` 三个 crate。
 - 支持 Windows、Linux、macOS。平台差异通过对应实现处理，不依赖宿主机的内核 NFS 服务端。
 - 同时提供 CLI 和原生桌面 GUI；GUI 使用 egui，推荐使用 eframe。
 - CLI 和 GUI 复用同一套服务与配置逻辑，不能各自维护协议实现。
@@ -79,18 +79,13 @@
 
 ### 3.1 Workspace 职责
 
-建议采用以下划分；实现中可为保持简单而调整，但必须保留多 crate 结构及前后端复用。
+按用户确认的三个 crate 划分；协议、文件系统和服务管理作为 core 内部模块，不再拆成独立 crate。
 
-| Crate | 建议职责 |
+| Crate | 职责 |
 | --- | --- |
-| `filemux-core` | 配置模型、共享定义、访问策略、公共错误和状态类型。 |
-| `filemux-fs` | 受限文件访问、元数据、定位读取、上传文件发布。 |
-| `filemux-http` | HTTP 只读服务与响应处理。 |
-| `filemux-tftp` | TFTP 上传下载、协议适配与传输管理。 |
-| `filemux-nfs` | RPC/NFS/MOUNT/portmapper、UDP/TCP、句柄与目录分页。 |
-| `filemux-engine` | 服务启停、运行时、任务管理、状态与事件。 |
-| `filemux-cli` | 命令入口、配置加载和终端输出。 |
-| `filemux-gui` | egui 桌面界面，复用 engine。 |
+| `filemux-core` | 配置、受限文件访问、持久身份、上传发布、HTTP/TFTP/NFSv3、服务启停及事件；按 `fs`、`http`、`tftp`、`nfs`、`engine` 模块组织。 |
+| `filemux-cli` | 命令入口、配置加载和终端输出，依赖 core。 |
+| `filemux-gui` | egui 桌面界面及字体资源，依赖 core，可独立打包发布。 |
 
 CLI 单独构建不应强制依赖窗口和 GPU 组件。推荐统一 workspace 依赖、固定工具链，并随项目交付 Cargo.lock；这不授权执行 Git 提交。
 

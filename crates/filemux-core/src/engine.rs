@@ -1,10 +1,8 @@
 //! One service implementation for both the command line and the desktop application.
 
+use crate::fs::SharedFs;
+use crate::{Config, Endpoint, Event, EventSender, Protocol, ServerHandle, ServiceState, emit};
 use anyhow::{Context, Result, bail, ensure};
-use filemux_core::{
-    Config, Endpoint, Event, EventSender, Protocol, ServerHandle, ServiceState, emit,
-};
-use filemux_fs::SharedFs;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -160,9 +158,9 @@ impl Engine {
         let fs = self.filesystem().await?;
         let events = self.events.clone();
         match protocol {
-            Protocol::Http => filemux_http::start(fs, self.config.http.clone(), events).await,
-            Protocol::Tftp => filemux_tftp::start(fs, self.config.tftp.clone(), events).await,
-            Protocol::Nfs => filemux_nfs::start(fs, self.config.nfs.clone(), events).await,
+            Protocol::Http => crate::http::start(fs, self.config.http.clone(), events).await,
+            Protocol::Tftp => crate::tftp::start(fs, self.config.tftp.clone(), events).await,
+            Protocol::Nfs => crate::nfs::start(fs, self.config.nfs.clone(), events).await,
         }
         .with_context(|| format!("无法启动 {protocol}"))
     }

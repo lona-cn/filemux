@@ -25,7 +25,7 @@ RESOURCES = (
     "README.md",
     "LICENSE",
     "examples/filemux.toml",
-    "assets/fonts/OFL.txt",
+    "crates/filemux-gui/assets/fonts/OFL.txt",
     "docs/phase-1.md",
     "docs/progress.md",
     "docs/previews/phase-1.webp",

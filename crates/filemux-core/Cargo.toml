@@ -8,9 +8,9 @@ repository.workspace = true
 license.workspace = true
 license-file.workspace = true
 readme.workspace = true
-description = "Shared configuration, service lifecycle, and event types for Filemux file servers"
-keywords = ["filemux", "file-sharing", "configuration", "server"]
-categories = ["config", "network-programming"]
+description = "HTTP, TFTP and NFSv3 file servers with persistent filesystem identities"
+keywords = ["filemux", "file-sharing", "http", "tftp", "nfs"]
+categories = ["network-programming", "filesystem"]
 
 [dependencies]
 anyhow.workspace = true
@@ -20,3 +20,25 @@ tokio.workspace = true
 tokio-util.workspace = true
 directories.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+axum.workspace = true
+percent-encoding.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+fs2 = "0.4.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+reqwest.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+junction = "2"

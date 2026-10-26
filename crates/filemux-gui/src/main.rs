@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use clap::Parser;
 use eframe::egui::{self, Color32, FontFamily, FontId, RichText, Stroke, TextStyle};
+use filemux_core::engine::ServiceSnapshot;
 use filemux_core::{Config, Protocol, ServiceState, default_config_path};
-use filemux_engine::ServiceSnapshot;
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -494,10 +494,8 @@ fn install_style(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "noto-sc".into(),
-        egui::FontData::from_static(include_bytes!(
-            "../../../assets/fonts/NotoSansSC-Regular.otf"
-        ))
-        .into(),
+        egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSansSC-Regular.otf"))
+            .into(),
     );
     fonts
         .families

@@ -9,9 +9,9 @@
 //! datagrams so oversized requests are rejected without stopping the service.
 //! ERROR packets are never answered; only the transfer peer can abort its TID.
 
+use crate::fs::{FsError, SharedFs, Upload};
+use crate::{Endpoint, EventSender, Protocol, ServerHandle, TftpConfig, Transport, emit};
 use anyhow::{Context, ensure};
-use filemux_core::{Endpoint, EventSender, Protocol, ServerHandle, TftpConfig, Transport, emit};
-use filemux_fs::{FsError, SharedFs, Upload};
 use std::collections::HashSet;
 use std::fmt;
 use std::io;

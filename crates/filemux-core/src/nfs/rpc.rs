@@ -1,9 +1,9 @@
 //! ONC RPC v2, MOUNT v3 (RFC 1813 Appendix I), and portmapper v2 (RFC 1057).
 //! This implementation is original; no upstream server source is incorporated.
 
-use crate::nfs;
-use crate::xdr::{Malformed, Reader, Writer};
-use filemux_fs::{NodeKind, SharedFs};
+use super::nfs;
+use super::xdr::{Malformed, Reader, Writer};
+use crate::fs::{FsError, NodeKind, SharedFs};
 use std::sync::Arc;
 
 pub(crate) const PORTMAP: u32 = 100000;
@@ -192,7 +192,7 @@ impl Dispatcher {
         if !suffix.is_empty() && !suffix.starts_with(b"/") {
             return Err(2); // "/bootleg" is not within "/boot"
         }
-        let mount_error = |error: filemux_fs::FsError| -> u32 {
+        let mount_error = |error: FsError| -> u32 {
             match error.kind() {
                 std::io::ErrorKind::NotFound => 2,
                 std::io::ErrorKind::PermissionDenied
