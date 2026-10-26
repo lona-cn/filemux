@@ -1,0 +1,20 @@
+[package]
+name = "filemux-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+filemux-core = { path = "../filemux-core" }
+filemux-fs = { path = "../filemux-fs" }
+filemux-http = { path = "../filemux-http" }
+filemux-tftp = { path = "../filemux-tftp" }
+filemux-nfs = { path = "../filemux-nfs" }
+anyhow.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+reqwest.workspace = true

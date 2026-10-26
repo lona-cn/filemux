@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/filemux-core",
+    "crates/filemux-fs",
+    "crates/filemux-http",
+    "crates/filemux-tftp",
+    "crates/filemux-nfs",
+    "crates/filemux-engine",
+    "crates/filemux-cli",
+    "crates/filemux-gui",
+]
+default-members = ["crates/filemux-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "fs", "time", "signal"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+tempfile = "3"
+cap-std = "4"
+cap-fs-ext = "4"
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+axum = "0.8"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false }
+eframe = { version = "0.31", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "x11", "wayland"] }

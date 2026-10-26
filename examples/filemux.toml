@@ -1,0 +1,31 @@
+# 路径相对于本配置文件的位置；请先创建共享目录。
+root = "../share"
+# 必须位于共享目录之外；保留它才能恢复 NFS 旧句柄。
+state_dir = "../.filemux-state"
+
+[http]
+enabled = true
+bind = "127.0.0.1:8080"
+max_connections = 128
+
+[tftp]
+enabled = false
+bind = "127.0.0.1:69"
+# 只有显式开启才允许上传，仍然不覆盖已有文件。
+allow_upload = false
+max_upload_bytes = 1073741824
+max_transfers = 32
+timeout_ms = 1000
+retries = 5
+block_size_limit = 1468
+
+[nfs]
+enabled = false
+# NFSv3 与 MOUNTv3 共用此端口，同时提供 UDP 和 TCP。
+bind = "127.0.0.1:2049"
+# 使用非标准高端口可避免低端口提权；客户端需相应配置。
+# 如需关闭发现服务，改为 rpcbind = false。
+rpcbind = "127.0.0.1:111"
+export = "/"
+max_connections = 64
+max_request_bytes = 1048576

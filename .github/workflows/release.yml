@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Validate release version
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate tag against workspace version
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python .github/scripts/release.py metadata --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Required workspace checks
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Release ${{ matrix.target }}
+    needs: [metadata, checks]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary-suffix: .exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            binary-suffix: ""
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            binary-suffix: ""
+          - target: aarch64-apple-darwin
+            os: macos-15
+            binary-suffix: ""
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUST_BACKTRACE: "1"
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: target
+      TARGET: ${{ matrix.target }}
+      BINARY_SUFFIX: ${{ matrix.binary-suffix }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Linux window-system build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: filemux-release-v1
+          shared-key: release-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}
+          workspaces: ". -> target"
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Build release CLI and GUI
+        run: cargo build --release --locked --target "$TARGET" -p filemux-cli -p filemux-gui
+      - name: Run native CLI
+        run: ./target/"$TARGET"/release/filemux"$BINARY_SUFFIX" --version
+      - name: Package release binaries and documentation
+        run: |
+          python .github/scripts/release.py package \
+            --tag "$RELEASE_TAG" \
+            --target "$TARGET" \
+            --binary-dir "target/$TARGET/release" \
+            --output-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub Release
+    needs: [metadata, checks, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RELEASE_PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Require all native archives and generate checksums
+        run: python .github/scripts/release.py checksums --tag "$RELEASE_TAG" --artifacts-dir dist
+      - name: Create release without replacing existing releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          assets=(dist/*.zip dist/*.tar.gz dist/SHA256SUMS)
+          options=(--draft --verify-tag --generate-notes)
+          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
+            options+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${assets[@]}" "${options[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false

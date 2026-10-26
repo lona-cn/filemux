@@ -1,0 +1,8 @@
+/target/
+/.filemux-smoke/
+/filemux.toml
+/.filemux-state/
+/share/
+*.log
+.DS_Store
+Thumbs.db
