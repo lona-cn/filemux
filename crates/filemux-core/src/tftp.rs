@@ -55,7 +55,7 @@ pub async fn start(
     ensure!(config.max_upload_bytes > 0, "invalid TFTP upload limit");
     let socket = UdpSocket::bind(config.bind)
         .await
-        .context("binding TFTP listener")?;
+        .with_context(|| format!("binding TFTP listener {}", config.bind))?;
     let address = socket.local_addr()?;
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();

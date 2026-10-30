@@ -19,7 +19,7 @@ A cross-platform file server written in Rust for boot-file distribution and trus
 
 </details>
 
-Screenshots show the current development version.
+Screenshots show an earlier development layout. The current app includes the setup, connection and PXE flows described below.
 
 | Protocol | Transport and default ports | Access |
 | --- | --- | --- |
@@ -82,13 +82,19 @@ Run the current GUI from source:
 cargo run -p filemux-gui -- --config filemux.toml
 ```
 
-Configure paths and protocols in **Settings**, then start services on **Services**. **Logs** supports protocol and error filters. Opening the window does not start services. Saving settings does not reconfigure running services: stop all services, then start them to use new settings. The CLI default protocol options do not control GUI service switches.
+Confirm the shared and state directories under **Settings → General**, configure protocols, and save before starting services on **Services**. **Logs** supports protocol and error filters. Opening the window does not start services. The CLI default protocol options do not control GUI service switches.
+
+**Services** identifies local-only listeners and provides HTTP addresses with copy/open actions, plus Linux NFS mount examples using actual service endpoints. Startup address conflicts show the address and link back to the relevant settings; full diagnostics remain under **Technical details** and in logs.
+
+Saving settings does not reconfigure running services. A warning lists services still using older settings and links to **Services**: stop all services, then start the ones you need to use the saved settings. Stopping interrupts current client connections; saving never restarts them automatically.
 
 The interface follows the system language, with **English** and **简体中文** available under **Settings → General → Interface language**. Language changes apply immediately and are saved separately on normal exit; service settings are unaffected. Raw logs and system diagnostics retain their original text. Closing the window stops its own services, not a separate CLI process.
 
 ### PXE boot
 
 Under **Settings → PXE**, select a local IPv4 address and add Linux (kernel, initrd and arguments), Windows PE (`boot.wim`), or an existing local iPXE script. Paths are relative to the shared directory and use `/`; absolute paths, traversal and reserved names are rejected. Prepare Linux/WinPE files yourself. WinPE uses modern wimboot's WIM extraction; advanced BCD/boot.sdi or injected-file setups belong in a custom iPXE script.
+
+The PXE page follows address/protocol requirements, boot-menu editing, then file checks. Boot-program paths and optional downloads are in an expandable section. Menu URLs appear only after a server IPv4 and compatible HTTP listener have been configured; they are configuration previews, not confirmation that the menu is running.
 
 Enable HTTP and TFTP for CLI startup. HTTP must use a fixed nonzero IPv4 port and listen on the selected address or `0.0.0.0`; TFTP must use port 69. The menu is `http://<server_ip>:<http_port>/.filemux-pxe/menu.ipxe`. **Check boot files**, or `filemux --config filemux.toml check`, reports all missing resources without creating state. This checks paths and non-empty regular files, not bootability or subsequent changes. A timeout of `0` waits for manual selection; failed boots return to the menu without another countdown.
 
@@ -211,13 +217,19 @@ filemux --config filemux.toml serve --tftp-bind 127.0.0.1:1069 --allow-upload
 cargo run -p filemux-gui -- --config filemux.toml
 ```
 
-在**设置**中配置目录与协议，再到**服务**页启动；**日志**页支持协议和错误筛选。打开窗口不自动启动服务，保存设置不改变运行中的服务；使用新设置需先全部停止，再重新启动。“CLI 默认启用协议”不控制 GUI 服务开关。
+在**设置 → 通用**中确认共享目录与持久状态目录，配置协议并保存，再到**服务**页启动；**日志**页支持协议和错误筛选。打开窗口不自动启动服务。“CLI 默认启用协议”不控制 GUI 服务开关。
 
-界面默认跟随系统语言，可在**设置 → 通用 → 界面语言**选择 **English / 简体中文**。选择立即生效，正常关闭时单独保存，不修改服务配置；原始日志和系统诊断保留原文。关闭窗口会停止其内部服务，不管理独立 CLI 进程。上方截图为当前开发版本。
+**服务**页会说明监听地址是否仅供本机使用，提供 HTTP 地址复制、浏览器打开，以及使用实际服务端点的 Linux NFS 挂载示例。启动时的地址冲突会显示具体地址，并可返回对应设置；完整诊断保留在**技术详情**和日志中。
+
+保存设置不改变运行中的服务。警示会列出仍使用原设置的服务，并提供前往**服务**页的入口；先全部停止，再启动需要的服务，才会使用已保存设置。停止会中断当前客户端连接，保存不会自动重启服务。
+
+界面默认跟随系统语言，可在**设置 → 通用 → 界面语言**选择 **English / 简体中文**。选择立即生效，正常关闭时单独保存，不修改服务配置；原始日志和系统诊断保留原文。关闭窗口会停止其内部服务，不管理独立 CLI 进程。上方截图来自较早的开发版本，当前布局与连接操作已有调整。
 
 ### PXE 启动
 
 在**设置 → PXE**中选择本机 IPv4，并添加 Linux（kernel、initrd、参数）、Windows PE（`boot.wim`）或共享目录内已有的 iPXE 脚本。资源路径相对于共享目录，使用 `/`；拒绝绝对路径、越界路径和保留名称。Linux／WinPE 文件需自行准备。WinPE 使用现代 wimboot 的 WIM 自动提取；需自带 BCD、boot.sdi 或注入文件时使用自定义 iPXE 脚本。
+
+PXE 页面按地址与协议要求、启动菜单、文件检查的顺序组织；启动程序路径和可选下载放在展开区。填写服务 IPv4 与兼容的 HTTP 监听设置后才显示菜单 URL；它只是配置预览，不表示菜单正在运行。
 
 CLI 启动 PXE 时须同时启用 HTTP、TFTP。HTTP 须使用非零固定 IPv4 端口，并监听所选 IP 或 `0.0.0.0`；TFTP 须使用 69 端口。菜单地址为 `http://<server_ip>:<http_port>/.filemux-pxe/menu.ipxe`。**检查启动文件**或 `filemux --config filemux.toml check` 会逐项报告缺失资源，不创建 state；它只检查路径和非空常规文件，不证明镜像能启动，也不保证文件此后不变。选择超时 `0` 表示等待人工选择；启动失败后回到菜单，不再次倒计时。
 

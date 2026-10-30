@@ -1,5 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod connections;
 mod i18n;
 mod settings;
 mod worker;
@@ -7,13 +8,14 @@ mod worker;
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use clap::Parser;
+use connections::{AccessScope, ConnectionInfo};
 use eframe::egui::{self, Color32, FontFamily, FontId, RichText, Stroke, TextStyle};
 use filemux_core::engine::ServiceSnapshot;
 use filemux_core::pxe::{PxeCheckReport, download::DownloadReport};
 use filemux_core::{Config, Event, Protocol, ServiceState, Transport, default_config_path};
 use i18n::{Language, LanguagePreference, PREF_LANGUAGE_KEY, UiNotice, UiText};
 use std::collections::VecDeque;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use worker::{Command, DirectoryTarget, MAX_LOGS, PxeTask, ServiceOperation, Worker};
@@ -21,9 +23,11 @@ use worker::{Command, DirectoryTarget, MAX_LOGS, PxeTask, ServiceOperation, Work
 const BACKGROUND: Color32 = Color32::from_rgb(29, 33, 39);
 const PANEL: Color32 = Color32::from_rgb(34, 38, 45);
 const BORDER: Color32 = Color32::from_rgb(65, 71, 81);
-const ACCENT: Color32 = Color32::from_rgb(48, 126, 233);
+const ACCENT: Color32 = Color32::from_rgb(104, 172, 255);
+const PRIMARY: Color32 = Color32::from_rgb(39, 105, 197);
 const MUTED: Color32 = Color32::from_rgb(157, 165, 178);
 const GREEN: Color32 = Color32::from_rgb(91, 211, 122);
+const WARNING: Color32 = Color32::from_rgb(242, 190, 87);
 const RED: Color32 = Color32::from_rgb(247, 118, 118);
 
 #[derive(Parser)]
@@ -208,7 +212,7 @@ enum Page {
     Logs,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingsTab {
     General,
     Http,
@@ -285,6 +289,8 @@ struct ServiceView {
     snapshot: ServiceSnapshot,
     listeners: Vec<ListenLine>,
     summary: Option<UiNotice>,
+    error_address: Option<SocketAddr>,
+    connection: Option<ConnectionInfo>,
 }
 
 impl ServiceView {
@@ -331,6 +337,8 @@ impl ServiceView {
             snapshot,
             listeners,
             summary: None,
+            error_address: None,
+            connection: None,
         }
     }
 }
@@ -366,6 +374,8 @@ struct FilemuxApp {
     pxe_check: Option<std::result::Result<PxeCheckReport, String>>,
     pxe_check_form: Option<Form>,
     pxe_download: Option<std::result::Result<DownloadReport, String>>,
+    pxe_menu_url: Option<(SocketAddrV4, String)>,
+    listener_focus: Option<SocketAddr>,
 }
 
 impl FilemuxApp {
@@ -431,6 +441,8 @@ impl FilemuxApp {
             pxe_check: None,
             pxe_check_form: None,
             pxe_download: None,
+            pxe_menu_url: None,
+            listener_focus: None,
         })
     }
 
@@ -463,6 +475,7 @@ impl FilemuxApp {
     fn poll(&mut self, ctx: &egui::Context) {
         let language = self.language();
         let mut state = self.worker.state.lock().expect("UI state mutex");
+        let snapshots_changed = state.snapshots.is_some();
         if let Some(snapshots) = state.snapshots.take() {
             self.services = snapshots
                 .into_iter()
@@ -474,6 +487,7 @@ impl FilemuxApp {
                                 && previous.snapshot.error == view.snapshot.error
                         }) {
                             view.summary = previous.summary.take();
+                            view.error_address = previous.error_address;
                         }
                     }
                     view
@@ -518,6 +532,10 @@ impl FilemuxApp {
                 .iter_mut()
                 .find(|view| view.snapshot.protocol == protocol)
             {
+                view.error_address = summary
+                    .detail
+                    .as_deref()
+                    .and_then(|detail| detail.parse().ok());
                 view.summary = Some(summary);
             }
         }
@@ -529,6 +547,26 @@ impl FilemuxApp {
         }
         let stopped = state.stopped;
         drop(state);
+        if snapshots_changed {
+            let addresses = if self.services.iter().any(|view| {
+                matches!(view.snapshot.protocol, Protocol::Http | Protocol::Nfs)
+                    && view.snapshot.state == ServiceState::Running
+                    && view
+                        .snapshot
+                        .endpoints
+                        .iter()
+                        .any(|endpoint| endpoint.address.ip().is_unspecified())
+            }) {
+                connections::local_addresses()
+            } else {
+                Ok(Vec::new())
+            };
+            let addresses = addresses.as_deref().map_err(|_| ());
+            for view in &mut self.services {
+                view.connection =
+                    ConnectionInfo::new(&view.snapshot, &self.active_config, addresses);
+            }
+        }
         if self.close_after_save && self.saving && self.running() && self.operation.is_none() {
             self.request(Command::StopAll);
         }
@@ -628,6 +666,17 @@ impl FilemuxApp {
                 "Saved; services still use previous settings",
                 "设置已保存，运行中的服务仍使用原设置",
             ),
+        }
+    }
+    fn config_status_color(&self) -> Color32 {
+        if self.read_warning.is_some() {
+            RED
+        } else if self.dirty() || (self.running() && !self.settings_in_use) {
+            WARNING
+        } else if self.saved_form.is_some() {
+            GREEN
+        } else {
+            MUTED
         }
     }
 
@@ -745,6 +794,7 @@ impl FilemuxApp {
     fn open_settings(&mut self, tab: SettingsTab) {
         self.settings_tab = tab;
         self.page = Page::Settings;
+        self.listener_focus = None;
     }
 
     fn show_protocol_logs(&mut self, protocol: Protocol) {
@@ -839,7 +889,12 @@ impl FilemuxApp {
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
         let lang = self.language();
         ui.horizontal(|ui| {
-            let right_width = 330.0_f32.min(ui.available_width() * 0.48);
+            let show_status = self.page != Page::Settings;
+            let right_width = if show_status {
+                330.0_f32.min(ui.available_width() * 0.48)
+            } else {
+                0.0
+            };
             let left_width = (ui.available_width() - right_width - 12.0).max(100.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(left_width, 18.0),
@@ -861,21 +916,23 @@ impl FilemuxApp {
                     .on_hover_text(self.config_path.to_string_lossy());
                 },
             );
-            ui.allocate_ui_with_layout(
-                egui::vec2(right_width, 18.0),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(self.config_status_label())
-                                .small()
-                                .color(MUTED),
+            if show_status {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, 18.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(self.config_status_label())
+                                    .small()
+                                    .color(self.config_status_color()),
+                            )
+                            .truncate(),
                         )
-                        .truncate(),
-                    )
-                    .on_hover_text(self.config_status_label());
-                },
-            );
+                        .on_hover_text(self.config_status_label());
+                    },
+                );
+            }
         });
     }
 
@@ -926,7 +983,7 @@ impl FilemuxApp {
         ui.add_space(12.0);
         if let Some(reason) = self.start_blocker() {
             ui.horizontal_wrapped(|ui| {
-                ui.colored_label(MUTED, reason.get(lang));
+                ui.colored_label(self.config_status_color(), reason.get(lang));
                 if self.saved_form.is_none()
                     && ui
                         .button(lang.text("Set up sharing", "设置共享目录"))
@@ -1017,7 +1074,8 @@ impl FilemuxApp {
                                 _ => MUTED,
                             };
                             ui.horizontal(|ui| {
-                                ui.colored_label(color, "●");
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                ui.painter().circle_filled(rect.center(), 4.0, color);
                                 ui.colored_label(
                                     color,
                                     service_state_label(state, lang),
@@ -1035,6 +1093,19 @@ impl FilemuxApp {
                                         .selectable(true),
                                 );
                                 ui.label(RichText::new(&listener.detail).small().color(MUTED));
+                            }
+                            if state == ServiceState::Running {
+                                if let Some(connection) = &view.connection {
+                                    ui.label(
+                                        RichText::new(connection.scope.label(lang))
+                                            .small()
+                                            .color(if connection.scope == AccessScope::LocalOnly {
+                                                WARNING
+                                            } else {
+                                                MUTED
+                                            }),
+                                    );
+                                }
                             }
                         }
                         3 => {
@@ -1103,29 +1174,52 @@ impl FilemuxApp {
                             });
                         }
                     });
+                    if state == ServiceState::Running {
+                        if let Some(connection) = &view.connection {
+                            let change_address = ui.push_id(("client-connection", protocol), |ui| {
+                                draw_connection(ui, protocol, connection, lang)
+                            }).inner;
+                            if change_address {
+                                action = Some(ServiceAction::Settings(protocol));
+                            }
+                        }
+                    }
                     if view.snapshot.error.is_some() {
                         egui::Frame::new()
                             .fill(Color32::from_rgb(59, 35, 40))
                             .inner_margin(egui::Margin::same(10))
                             .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(
+                                            view.summary.as_ref().map(|notice| notice.text.get(lang))
+                                                .unwrap_or(lang.text("The service failed. View technical details or logs.", "服务发生错误，请查看技术详情或日志。")),
+                                        ).color(RED),
+                                    ).wrap(),
+                                );
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(
-                                                view.summary.as_ref().map(|notice| notice.text.get(lang))
-                                                    .unwrap_or(lang.text("The service failed. View logs for details.", "服务发生错误，请查看完整日志。")),
-                                            )
-                                            .color(RED),
-                                        )
-                                        .wrap(),
-                                    );
-                                    if let Some(detail) = view.summary.as_ref().and_then(|notice| notice.detail.as_deref()) {
-                                        ui.add(egui::Label::new(RichText::new(detail).small().monospace().color(RED)).wrap().selectable(true));
+                                    if let Some(address) = view.error_address {
+                                        ui.monospace(address.to_string());
+                                    }
+                                    if ui.button(lang.text("Change settings", "修改对应设置")).clicked() {
+                                        action = Some(match view.error_address {
+                                            Some(address) if protocol != Protocol::ProxyDhcp => {
+                                                ServiceAction::ListenerSettings(protocol, address)
+                                            }
+                                            _ => ServiceAction::Settings(protocol),
+                                        });
                                     }
                                     if ui.button(lang.text("View logs", "查看日志")).clicked() {
                                         action = Some(ServiceAction::Logs(protocol));
                                     }
                                 });
+                                egui::CollapsingHeader::new(lang.text("Technical details", "技术详情"))
+                                    .id_salt(("service-error", protocol))
+                                    .show(ui, |ui| {
+                                        if let Some(error) = &view.snapshot.error {
+                                            ui.add(egui::Label::new(RichText::new(error).monospace()).wrap().selectable(true));
+                                        }
+                                    });
                             });
                     }
                     if index + 1 < self.services.len() {
@@ -1140,6 +1234,10 @@ impl FilemuxApp {
                         }
                         Some(ServiceAction::Settings(protocol)) => {
                             self.open_settings(protocol.into())
+                        }
+                        Some(ServiceAction::ListenerSettings(protocol, address)) => {
+                            self.open_settings(protocol.into());
+                            self.listener_focus = Some(address);
                         }
                         Some(ServiceAction::Logs(protocol)) => self.show_protocol_logs(protocol),
                         None => {}
@@ -1307,7 +1405,11 @@ impl FilemuxApp {
                     if ui
                         .add_enabled(
                             self.save_blocker().is_none(),
-                            egui::Button::new(lang.text("Save & close", "保存并关闭")).fill(ACCENT),
+                            egui::Button::new(
+                                RichText::new(lang.text("Save & close", "保存并关闭"))
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(PRIMARY),
                         )
                         .clicked()
                     {
@@ -1328,6 +1430,7 @@ enum ServiceAction {
     Start(Protocol),
     Stop(Protocol),
     Settings(Protocol),
+    ListenerSettings(Protocol, SocketAddr),
     Logs(Protocol),
 }
 
@@ -1377,6 +1480,124 @@ fn draw_notice(ui: &mut egui::Ui, notice: &UiNotice, language: Language) {
                 .selectable(true),
         );
     }
+}
+
+fn copy_button(ui: &mut egui::Ui, language: Language, text: &str, label: &str) {
+    let id = ui.make_persistent_id(("copy-feedback", label));
+    let time = ui.input(|input| input.time);
+    let copied = ui
+        .ctx()
+        .data(|data| data.get_temp::<f64>(id))
+        .is_some_and(|until| until > time);
+    if ui
+        .add(
+            egui::Button::new(if copied {
+                language.text("Copied", "已复制")
+            } else {
+                label
+            })
+            .min_size(egui::vec2(104.0, 28.0)),
+        )
+        .clicked()
+    {
+        ui.ctx().copy_text(text.to_owned());
+        ui.ctx().data_mut(|data| data.insert_temp(id, time + 2.0));
+        ui.ctx().request_repaint_after(Duration::from_secs(2));
+    }
+}
+
+fn draw_connection(
+    ui: &mut egui::Ui,
+    protocol: Protocol,
+    connection: &ConnectionInfo,
+    language: Language,
+) -> bool {
+    if !matches!(protocol, Protocol::Http | Protocol::Nfs) {
+        return false;
+    }
+    let mut change_address = false;
+    if connection.targets.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(WARNING, if connection.lookup_failed {
+                language.text(
+                    "Could not read local interfaces. Set a specific local listening IP.",
+                    "无法读取本机网络接口，请在协议设置中指定明确的本机监听 IP。",
+                )
+            } else {
+                language.text(
+                    "No client address can be generated for this listener. Set a specific local IP.",
+                    "无法为此监听地址生成客户端地址，请在协议设置中指定可用的本机 IP。",
+                )
+            });
+            change_address = ui.button(language.text("Change listening IP", "修改监听 IP")).clicked();
+        });
+        return change_address;
+    }
+    if protocol == Protocol::Http {
+        for (index, url) in connection.targets.iter().enumerate() {
+            ui.push_id(index, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(url).monospace())
+                            .wrap()
+                            .selectable(true),
+                    );
+                    copy_button(ui, language, url, language.text("Copy address", "复制地址"));
+                    if ui
+                        .button(language.text("Open in browser", "在浏览器打开"))
+                        .clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url.clone()));
+                    }
+                });
+            });
+        }
+    } else {
+        egui::CollapsingHeader::new(language.text("Linux mount examples", "Linux 挂载示例"))
+            .id_salt("nfs-client-examples")
+            .show(ui, |ui| {
+                ui.label(language.text(
+                    "On the client, create /mnt/filemux first, then run a command below.",
+                    "先在客户端创建 /mnt/filemux 目录，再执行下方命令。",
+                ));
+                for (index, command) in connection.targets.iter().enumerate() {
+                    ui.push_id(index, |ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(command).monospace())
+                                .wrap()
+                                .selectable(true),
+                        );
+                        copy_button(
+                            ui,
+                            language,
+                            command,
+                            language.text("Copy command", "复制命令"),
+                        );
+                    });
+                }
+            });
+    }
+    if connection.scope == AccessScope::LocalOnly {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(language.text(
+                    "Other devices cannot use this loopback address.",
+                    "其他设备无法通过此本机地址访问。",
+                ))
+                .small()
+                .color(WARNING),
+            );
+            change_address = ui
+                .small_button(language.text("Set up LAN access", "配置局域网访问"))
+                .clicked();
+        });
+    } else {
+        ui.label(RichText::new(language.text(
+            "Use an address reachable from the client. Firewall rules are not changed automatically.",
+            "请选择客户端能够访问的地址；不会自动修改防火墙。",
+        )).small().color(MUTED));
+    }
+    change_address
 }
 
 fn service_widths(width: f32) -> [f32; 5] {
@@ -1507,7 +1728,8 @@ fn install_style(ctx: &egui::Context) {
     style.visuals.panel_fill = BACKGROUND;
     style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(48, 54, 63);
     style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER);
-    style.visuals.selection.bg_fill = ACCENT;
+    style.visuals.selection.bg_fill = PRIMARY;
+    style.visuals.selection.stroke.color = Color32::WHITE;
     style.visuals.hyperlink_color = ACCENT;
     style.spacing.item_spacing = egui::vec2(10.0, 8.0);
     style.spacing.button_padding = egui::vec2(12.0, 6.0);

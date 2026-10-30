@@ -292,7 +292,7 @@ impl Worker {
                                                             at: SystemTime::now(), protocol, message: full, is_error: true,
                                                         });
                                                     }
-                                                    summaries.push((protocol, service_error_summary(error)));
+                                                    summaries.push((protocol, service_error_summary(error, protocol)));
                                                 }
                                             }
                                         }
@@ -601,7 +601,7 @@ fn publish_snapshots(
     changed
 }
 
-fn service_error_summary(error: &anyhow::Error) -> UiNotice {
+fn service_error_summary(error: &anyhow::Error, protocol: Protocol) -> UiNotice {
     if let Some(notice) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<UiNotice>())
@@ -612,17 +612,25 @@ fn service_error_summary(error: &anyhow::Error) -> UiNotice {
         .chain()
         .find_map(|cause| cause.downcast_ref::<io::Error>())
         .map(|error| match error.kind() {
-            io::ErrorKind::AddrInUse => UiText::new(
-                "The listening address is already in use",
-                "监听地址已被占用",
+            io::ErrorKind::AddrInUse if protocol == Protocol::ProxyDhcp => UiText::new(
+                "The ProxyDHCP address is in use. Use external DHCP mode or another server.",
+                "ProxyDHCP 监听地址已被占用，请改用外部 DHCP 模式或另一台服务器。",
             ),
-            io::ErrorKind::AddrNotAvailable => {
-                UiText::new("The listening address is unavailable", "监听地址不可用")
-            }
-            io::ErrorKind::PermissionDenied => UiText::new("Permission denied", "权限不足"),
+            io::ErrorKind::AddrInUse => UiText::new(
+                "The listening address is in use. Change the port or stop the program using it.",
+                "监听地址已被占用，请修改端口，或停止占用该地址的程序。",
+            ),
+            io::ErrorKind::AddrNotAvailable => UiText::new(
+                "The listening IP is unavailable. Choose an address assigned to this computer.",
+                "监听 IP 不可用，请选择本机已有的 IP 地址。",
+            ),
+            io::ErrorKind::PermissionDenied => UiText::new(
+                "Permission denied. Check directory access and listening-port permissions.",
+                "权限不足，请检查目录访问权限与监听端口权限。",
+            ),
             io::ErrorKind::NotFound => UiText::new(
-                "A required file or directory does not exist",
-                "所需文件或目录不存在",
+                "A file or directory is missing. Check the shared directory and boot-file paths.",
+                "所需文件或目录不存在，请检查共享目录与启动文件路径。",
             ),
             io::ErrorKind::NotADirectory => {
                 UiText::new("The path is not a directory", "路径不是目录")
@@ -658,13 +666,17 @@ fn snapshot_error_notice(message: &str) -> UiNotice {
 }
 
 fn diagnostic_address(message: &str) -> Option<SocketAddr> {
-    message.split_whitespace().find_map(|token| {
-        token
-            .trim_matches(['(', ')', ',', ';'])
-            .trim_end_matches(':')
-            .parse()
-            .ok()
-    })
+    message
+        .split(|character: char| {
+            character.is_whitespace() || matches!(character, '，' | '；' | '：')
+        })
+        .find_map(|token| {
+            token
+                .trim_matches(['(', ')', ',', ';'])
+                .trim_end_matches(':')
+                .parse()
+                .ok()
+        })
 }
 
 fn short_diagnostic(message: &str) -> String {
@@ -870,6 +882,39 @@ mod tests {
         worker.shutdown();
         wait_for(&worker, |ui| ui.stopped);
         assert!(TcpStream::connect_timeout(&http, Duration::from_millis(200)).is_err());
+    }
+
+    #[test]
+    fn tftp_conflict_preserves_the_exact_address_for_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let settings = tempfile::tempdir().unwrap();
+        let blocker = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let address = blocker.local_addr().unwrap();
+        let mut config = Config {
+            root: root.path().to_path_buf(),
+            state_dir: state.path().to_path_buf(),
+            ..Config::default()
+        };
+        config.tftp.bind = address;
+        let path = settings.path().join("filemux.toml");
+        config.save(&path).unwrap();
+        let worker = Worker::spawn(config, true, path, egui::Context::default()).unwrap();
+        worker.request(Command::Start(Protocol::Tftp)).unwrap();
+        wait_for(&worker, |ui| ui.operation.is_none());
+        {
+            let ui = worker.state.lock().unwrap();
+            assert_eq!(
+                ui.service_errors
+                    .iter()
+                    .find(|(protocol, _)| *protocol == Protocol::Tftp)
+                    .and_then(|(_, notice)| notice.detail.as_deref())
+                    .and_then(|detail| detail.parse::<SocketAddr>().ok()),
+                Some(address),
+            );
+        }
+        worker.shutdown();
+        wait_for(&worker, |ui| ui.stopped);
     }
 
     #[test]

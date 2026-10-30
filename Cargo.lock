@@ -1452,6 +1452,7 @@ dependencies = [
  "clap",
  "eframe",
  "filemux-core",
+ "network-interface",
  "rfd",
  "sys-locale",
  "tempfile",

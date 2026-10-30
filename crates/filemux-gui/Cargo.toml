@@ -27,6 +27,7 @@ tokio-util.workspace = true
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sys-locale = "0.3.2"
+network-interface = "2.0.5"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,11 +1,11 @@
 use crate::i18n::{Language, LanguagePreference};
 use crate::worker::PxeTask;
 use crate::worker::{Command, DirectoryTarget};
-use crate::{ACCENT, BORDER, FilemuxApp, GREEN, MUTED, PANEL, RED, SettingsTab};
+use crate::{BORDER, FilemuxApp, GREEN, MUTED, PANEL, PRIMARY, RED, SettingsTab, WARNING};
 use eframe::egui::{self, RichText, Stroke};
 use filemux_core::pxe::download::BootTool;
 use filemux_core::{PxeEntry, PxeMode};
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 
 impl FilemuxApp {
@@ -29,7 +29,7 @@ impl FilemuxApp {
         ui.add_space(8.0);
 
         egui::ScrollArea::vertical()
-            .id_salt("settings-content")
+            .id_salt(("settings-content", self.settings_tab))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if let Some(warning) = &self.read_warning {
@@ -95,37 +95,18 @@ impl FilemuxApp {
                     SettingsTab::Nfs => self.draw_nfs_settings(ui),
                     SettingsTab::Pxe => self.draw_pxe_settings(ui),
                 }
-                ui.add_space(12.0);
-                hint(
-                    ui,
-                    lang.text(
-                        "Saving does not restart services. Running services keep their startup settings.",
-                        "保存不会重启服务。运行中的服务仍使用启动时的设置。",
-                    ),
-                );
-                hint(
-                    ui,
-                    lang.text(
-                        "To apply new settings, stop all running services on the Services page, then start them individually.",
-                        "如有服务仍在运行，请先在“服务”页全部停止，再逐个启动以使用新设置。",
-                    ),
-                );
             });
     }
 
     pub(super) fn draw_settings_actions(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
         let blocker = self.save_blocker();
-        let can_discard = self.edits_allowed() && self.picking.is_none() && self.dirty();
-        let status_color = if self.read_warning.is_some() {
-            RED
-        } else if self.saved_form.as_ref() == Some(&self.form) {
-            GREEN
-        } else {
-            MUTED
-        };
+        let dirty = self.dirty();
+        let running = self.running();
+        let needs_restart = running && !self.settings_in_use;
+        let can_discard = self.edits_allowed() && self.picking.is_none() && dirty;
         ui.horizontal(|ui| {
-            ui.colored_label(status_color, self.config_status_label());
+            ui.colored_label(self.config_status_color(), self.config_status_label());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add_enabled(
@@ -134,7 +115,7 @@ impl FilemuxApp {
                             RichText::new(lang.text("Save settings", "保存设置"))
                                 .color(egui::Color32::WHITE),
                         )
-                        .fill(ACCENT)
+                        .fill(PRIMARY)
                         .min_size(egui::vec2(112.0, 34.0)),
                     )
                     .clicked()
@@ -153,70 +134,73 @@ impl FilemuxApp {
                 }
             });
         });
-        if let Some(reason) = blocker {
+        if needs_restart && !dirty {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    WARNING,
+                    lang.text("Still using previous settings:", "仍使用原设置的服务："),
+                );
+                for service in &self.services {
+                    if matches!(
+                        service.snapshot.state,
+                        filemux_core::ServiceState::Running
+                            | filemux_core::ServiceState::Starting
+                            | filemux_core::ServiceState::Stopping
+                    ) {
+                        ui.label(crate::protocol_label(service.snapshot.protocol));
+                    }
+                }
+                if ui.button(lang.text("Go to Services", "前往服务")).clicked() {
+                    self.page = crate::Page::Services;
+                }
+            });
+            hint(ui, lang.text(
+                "Stop all services there, then start the ones you need. Stopping interrupts current client connections.",
+                "到服务页全部停止，再启动需要的服务；停止会中断当前客户端连接。"));
+        } else if dirty && running {
+            hint(ui, lang.text(
+                "Saving keeps running services unchanged. Stop and start them explicitly to use new settings.",
+                "保存不会改变运行中的服务；需要由你停止并重新启动，才会使用新设置。"));
+        } else if self.saved_form.is_some() && !dirty && !running {
+            if ui
+                .button(lang.text("Go to Services to start sharing", "前往服务，启动共享"))
+                .clicked()
+            {
+                self.page = crate::Page::Services;
+            }
+        } else if self.saved_form.is_none() {
+            hint(
+                ui,
+                lang.text(
+                    "Saving does not start services.",
+                    "保存后不会自动启动服务。",
+                ),
+            );
+        }
+        if let Some(reason) = blocker.filter(|_| dirty || self.saved_form.is_none()) {
             hint(ui, reason.get(lang));
         }
     }
 
     fn draw_general_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
-        let mut language_preference = self.language_preference;
-        settings_card(
-            ui,
-            lang,
-            lang.text("Interface language", "界面语言"),
-            false,
-            |ui| {
-                ui.add_enabled_ui(!self.closing, |ui| {
-                    let label = ui.label(lang.text("Language", "语言"));
-                    egui::ComboBox::from_id_salt("settings-interface-language")
-                        .selected_text(match language_preference {
-                            LanguagePreference::System => {
-                                lang.text("System (default)", "跟随系统（默认）")
-                            }
-                            LanguagePreference::English => "English",
-                            LanguagePreference::Chinese => "简体中文",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut language_preference,
-                                LanguagePreference::System,
-                                lang.text("System (default)", "跟随系统（默认）"),
-                            );
-                            ui.selectable_value(
-                                &mut language_preference,
-                                LanguagePreference::English,
-                                "English",
-                            );
-                            ui.selectable_value(
-                                &mut language_preference,
-                                LanguagePreference::Chinese,
-                                "简体中文",
-                            );
-                        })
-                        .response
-                        .labelled_by(label.id);
-                });
-                hint(
+        if self.saved_form.is_none() {
+            hint(
                 ui,
                 lang.text(
-                    "Changes apply immediately and are saved separately on normal exit. Service settings are unchanged and services are not restarted.",
-                    "立即切换，正常关闭时单独保存；不修改服务配置，也不会重启服务。",
+                    "Confirm these directories and save, then start the services you need on the Services page.",
+                    "确认下方目录并保存，然后到“服务”页启动需要的服务。",
                 ),
             );
-            },
-        );
-        if language_preference != self.language_preference {
-            self.set_language_preference(language_preference);
+            ui.add_space(8.0);
         }
-        ui.add_space(12.0);
         let editable = self.edits_allowed();
         let can_pick = editable && self.picking.is_none();
         let mut command = None;
         settings_card(
             ui,
             lang,
-            lang.text("Sharing and state", "共享与状态"),
+            lang.text("Shared directory and state", "共享目录与状态"),
             false,
             |ui| {
                 directory_field(
@@ -250,15 +234,8 @@ impl FilemuxApp {
                 hint(
                 ui,
                 lang.text(
-                    "Stores persistent state such as NFS file handles; this directory is not shared with clients.",
-                    "保存 NFS 文件句柄等持久状态，不是对外共享的文件目录。",
-                ),
-            );
-                hint(
-                ui,
-                lang.text(
-                    "Must be outside the shared directory. Use a different state directory when changing the shared directory.",
-                    "必须位于共享目录之外；更换共享目录时，请使用另一持久状态目录。",
+                    "Stores NFS file handles outside the shared directory and is not shared with clients. Use a new state directory when changing the shared directory.",
+                    "在共享目录之外保存 NFS 文件句柄，不对外共享。更换共享目录时，请使用新的状态目录。",
                 ),
             );
             },
@@ -269,6 +246,47 @@ impl FilemuxApp {
                 DirectoryTarget::State => &self.form.state_dir,
             };
             self.request(Command::PickDirectory(target, PathBuf::from(initial), lang));
+        }
+        ui.add_space(12.0);
+        let mut language_preference = self.language_preference;
+        ui.add_enabled_ui(!self.closing, |ui| {
+            ui.horizontal(|ui| {
+                let label = ui.label(lang.text("Interface language", "界面语言"));
+                egui::ComboBox::from_id_salt("settings-interface-language")
+                    .selected_text(match language_preference {
+                        LanguagePreference::System => {
+                            lang.text("System (default)", "跟随系统（默认）")
+                        }
+                        LanguagePreference::English => "English",
+                        LanguagePreference::Chinese => "简体中文",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut language_preference,
+                            LanguagePreference::System,
+                            lang.text("System (default)", "跟随系统（默认）"),
+                        );
+                        ui.selectable_value(
+                            &mut language_preference,
+                            LanguagePreference::English,
+                            "English",
+                        );
+                        ui.selectable_value(
+                            &mut language_preference,
+                            LanguagePreference::Chinese,
+                            "简体中文",
+                        );
+                    })
+                    .response
+                    .labelled_by(label.id)
+                    .on_hover_text(lang.text(
+                        "Changes immediately and is saved separately on normal exit. Service settings are unchanged.",
+                        "立即切换，正常关闭时单独保存；不修改服务配置。",
+                    ));
+            });
+        });
+        if language_preference != self.language_preference {
+            self.set_language_preference(language_preference);
         }
         ui.add_space(12.0);
         egui::CollapsingHeader::new(lang.text(
@@ -299,6 +317,7 @@ impl FilemuxApp {
     fn draw_http_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
         let editable = self.edits_allowed();
+        let focus_port = self.listener_focus.take().is_some();
         settings_card(ui, lang, "HTTP", false, |ui| {
             ui.add_enabled_ui(editable, |ui| {
                 bind_fields(
@@ -307,6 +326,7 @@ impl FilemuxApp {
                     "http",
                     &mut self.form.http_ip,
                     &mut self.form.config.http.bind,
+                    focus_port,
                 );
                 ui.add_space(12.0);
                 ui.push_id("http-allow-upload", |ui| {
@@ -324,21 +344,35 @@ impl FilemuxApp {
                     "上传默认关闭。启用后只允许新建文件，不覆盖已有文件。",
                 ),
             );
-            hint(
-                ui,
-                &format!(
-                    "{}: {} {}",
+            let bytes = self.form.config.http.max_upload_bytes;
+            let (unit, name) = [(1_u64 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")]
+                .into_iter()
+                .find(|(unit, _)| bytes >= *unit)
+                .unwrap_or((1, lang.text("bytes", "字节")));
+            let limit = if bytes % unit == 0 {
+                format!(
+                    "{}: {} {name}",
                     lang.text("Maximum file size", "单文件大小上限"),
-                    self.form.config.http.max_upload_bytes,
-                    lang.text("bytes", "字节"),
-                ),
-            );
+                    bytes / unit
+                )
+            } else {
+                format!(
+                    "{}: {:.1} {name}",
+                    lang.text("Maximum file size", "单文件大小上限"),
+                    bytes as f64 / unit as f64
+                )
+            };
+            ui.label(RichText::new(limit).small().color(MUTED))
+                .on_hover_ui(|ui| {
+                    ui.label(format!("{bytes} {}", lang.text("bytes", "字节")));
+                });
         });
     }
 
     fn draw_tftp_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
         let editable = self.edits_allowed();
+        let focus_port = self.listener_focus.take().is_some();
         settings_card(ui, lang, "TFTP", false, |ui| {
             ui.add_enabled_ui(editable, |ui| {
                 bind_fields(
@@ -347,6 +381,7 @@ impl FilemuxApp {
                     "tftp",
                     &mut self.form.tftp_ip,
                     &mut self.form.config.tftp.bind,
+                    focus_port,
                 );
                 ui.add_space(12.0);
                 ui.push_id("tftp-allow-upload", |ui| {
@@ -369,6 +404,10 @@ impl FilemuxApp {
     fn draw_nfs_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
         let editable = self.edits_allowed();
+        let focus = self.listener_focus.take();
+        let focus_rpc = focus
+            .is_some_and(|address| self.form.rpcbind.trim().parse::<SocketAddr>() == Ok(address));
+        let focus_port = focus.is_some() && !focus_rpc;
         settings_card(ui, lang, "NFSv3", true, |ui| {
             ui.add_enabled_ui(editable, |ui| {
                 bind_fields(
@@ -377,6 +416,7 @@ impl FilemuxApp {
                     "nfs",
                     &mut self.form.nfs_ip,
                     &mut self.form.config.nfs.bind,
+                    focus_port,
                 );
                 ui.add_space(12.0);
                 let label = ui.label(lang.text("Export path", "导出路径"));
@@ -413,15 +453,23 @@ impl FilemuxApp {
                     let label =
                         ui.label(lang.text("Listen address (IP:port)", "监听地址（IP:端口）"));
                     ui.add_enabled_ui(self.form.rpcbind_enabled, |ui| {
-                        ui.add_sized(
-                            [ui.available_width(), 30.0],
-                            egui::TextEdit::singleline(&mut self.form.rpcbind)
-                                .id(egui::Id::new("nfs-rpc-discovery-address"))
-                                .hint_text(
-                                    lang.text("e.g. 192.168.10.20:111", "例如 192.168.10.20:111"),
-                                ),
-                        )
-                        .labelled_by(label.id);
+                        let response = ui
+                            .add_sized(
+                                [ui.available_width(), 30.0],
+                                egui::TextEdit::singleline(&mut self.form.rpcbind)
+                                    .id(egui::Id::new("nfs-rpc-discovery-address"))
+                                    .hint_text(
+                                        lang.text(
+                                            "e.g. 192.168.10.20:111",
+                                            "例如 192.168.10.20:111",
+                                        ),
+                                    ),
+                            )
+                            .labelled_by(label.id);
+                        if focus_rpc {
+                            response.request_focus();
+                            response.scroll_to_me(Some(egui::Align::Center));
+                        }
                     });
                 });
                 if !self.form.rpcbind_enabled {
@@ -447,138 +495,118 @@ impl FilemuxApp {
     fn draw_pxe_settings(&mut self, ui: &mut egui::Ui) {
         let lang = self.language();
         let editable = self.edits_allowed();
-        settings_card(ui, lang, lang.text("PXE boot", "PXE 启动"), false, |ui| {
-            ui.add_enabled_ui(editable, |ui| {
-                ui.checkbox(
-                    &mut self.form.config.pxe.enabled,
-                    lang.text("Enable PXE menu", "启用 PXE 菜单"),
-                );
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(
-                        &mut self.form.config.pxe.mode,
-                        PxeMode::ExternalDhcp,
-                        lang.text("External DHCP", "外部 DHCP"),
-                    );
-                    ui.selectable_value(
-                        &mut self.form.config.pxe.mode,
-                        PxeMode::ProxyDhcp,
-                        "ProxyDHCP",
-                    );
-                });
-            });
-            hint(ui, lang.text(
-                "Both modes need an existing DHCP server to assign IP addresses. Filemux does not change router settings.",
-                "两种模式都需要原 DHCP 分配 IP；Filemux 不修改路由器设置。"));
-            if self.form.config.pxe.mode == PxeMode::ProxyDhcp {
-                hint(ui, lang.text(
-                    "ProxyDHCP only supplies boot information on the selected IPv4 interface. UDP 67/4011 must be free; privileges may be required. Firewall rules are not changed.",
-                    "ProxyDHCP 不分配 IP，只向所选 IPv4 所属接口提供启动信息。UDP 67/4011 须未被占用，可能需要权限；不会修改防火墙。"));
-            }
-            ui.add_space(8.0);
-            ui.add_enabled_ui(editable, |ui| {
-                pxe_field(
-                    ui,
-                    lang.text("Server IPv4", "服务 IPv4"),
-                    &mut self.form.pxe_server_ip,
-                );
-            });
-            hint(ui, lang.text(
-                "Choose a local IPv4 reachable by clients. HTTP must listen there or on 0.0.0.0 with a fixed port; TFTP must use port 69.",
-                "填写客户端可访问的本机 IPv4；HTTP 须监听该 IP 或 0.0.0.0 并使用固定端口，TFTP 须使用 69 端口。"));
-        });
-        ui.add_space(14.0);
+        let server_ip = self
+            .form
+            .pxe_server_ip
+            .trim()
+            .parse::<Ipv4Addr>()
+            .ok()
+            .filter(|ip| !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast());
+        let accepts_server = |value: &str| {
+            server_ip.is_some()
+                && value
+                    .trim()
+                    .parse::<Ipv4Addr>()
+                    .is_ok_and(|ip| ip.is_unspecified() || Some(ip) == server_ip)
+        };
+        let http_ready =
+            accepts_server(&self.form.http_ip) && self.form.config.http.bind.port() != 0;
+        let tftp_ready =
+            accepts_server(&self.form.tftp_ip) && self.form.config.tftp.bind.port() == 69;
+        let menu_address = server_ip
+            .filter(|_| http_ready)
+            .map(|ip| SocketAddrV4::new(ip, self.form.config.http.bind.port()));
+        if self.pxe_menu_url.as_ref().map(|(address, _)| *address) != menu_address {
+            self.pxe_menu_url = menu_address
+                .map(|address| (address, format!("http://{address}/.filemux-pxe/menu.ipxe")));
+        }
         settings_card(
             ui,
             lang,
-            lang.text("Boot programs", "启动程序"),
+            lang.text("PXE address and protocols", "PXE 地址与协议"),
             false,
             |ui| {
                 ui.add_enabled_ui(editable, |ui| {
-                    pxe_field(
-                        ui,
-                        lang.text("BIOS x86 iPXE", "BIOS x86 iPXE 文件"),
-                        &mut self.form.config.pxe.bios_bootfile,
+                    ui.checkbox(
+                        &mut self.form.config.pxe.enabled,
+                        lang.text("Enable PXE menu", "启用 PXE 菜单"),
                     );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.selectable_value(
+                            &mut self.form.config.pxe.mode,
+                            PxeMode::ExternalDhcp,
+                            lang.text("External DHCP", "外部 DHCP"),
+                        );
+                        ui.selectable_value(
+                            &mut self.form.config.pxe.mode,
+                            PxeMode::ProxyDhcp,
+                            "ProxyDHCP",
+                        );
+                    });
+                });
+                hint(ui, lang.text(
+                "Both modes need an existing DHCP server to assign IP addresses. Filemux does not change router settings.",
+                "两种模式都需要原 DHCP 分配 IP；Filemux 不修改路由器设置。"));
+                if self.form.config.pxe.mode == PxeMode::ProxyDhcp {
+                    hint(ui, lang.text(
+                    "ProxyDHCP only supplies boot information on the selected IPv4 interface. UDP 67/4011 must be free; privileges may be required. Firewall rules are not changed.",
+                    "ProxyDHCP 不分配 IP，只向所选 IPv4 所属接口提供启动信息。UDP 67/4011 须未被占用，可能需要权限；不会修改防火墙。"));
+                }
+                ui.add_space(8.0);
+                ui.add_enabled_ui(editable, |ui| {
                     pxe_field(
                         ui,
-                        lang.text("UEFI x64 iPXE", "UEFI x64 iPXE 文件"),
-                        &mut self.form.config.pxe.uefi_x64_bootfile,
-                    );
-                    pxe_field(
-                        ui,
-                        lang.text("wimboot (Windows PE only)", "wimboot（仅 Windows PE 需要）"),
-                        &mut self.form.config.pxe.wimboot,
+                        lang.text("Server IPv4", "服务 IPv4"),
+                        &mut self.form.pxe_server_ip,
                     );
                 });
-                hint(ui, lang.text("All file paths are relative to the shared directory; use /. Parent directories must already exist.", "所有文件路径均相对于共享目录，使用 /；父目录须已存在。"));
-                let can_download = editable
-                    && self.saved_form.is_some()
-                    && !self.dirty()
-                    && self.operation.is_none()
-                    && self.picking.is_none();
-                for tool in [BootTool::Ipxe, BootTool::Wimboot] {
-                    let spec = tool.spec();
-                    ui.separator();
-                    let title = match tool {
-                        BootTool::Ipxe => "iPXE",
-                        BootTool::Wimboot => "wimboot",
-                    };
-                    let targets = match tool {
-                        BootTool::Ipxe => format!(
-                            "{} · {}",
-                            self.form.config.pxe.bios_bootfile,
-                            self.form.config.pxe.uefi_x64_bootfile
+                if server_ip.is_none() {
+                    hint(
+                        ui,
+                        lang.text(
+                            "Enter a specific local IPv4 address, not 0.0.0.0.",
+                            "请填写明确的本机 IPv4，不能使用 0.0.0.0。",
                         ),
-                        BootTool::Wimboot => self.form.config.pxe.wimboot.clone(),
-                    };
-                    ui.label(format!("{title} {} · {targets}", spec.version));
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .add_enabled(
-                                can_download,
-                                egui::Button::new(format!(
-                                    "{} {title}",
-                                    lang.text("Download", "下载")
-                                )),
-                            )
-                            .on_disabled_hover_text(lang.text(
-                                "Save changes and wait for other operations before downloading.",
-                                "请先保存修改，并等待其他操作完成后下载。",
-                            ))
-                            .clicked()
-                        {
-                            self.request(Command::DownloadBootTool(tool));
-                        }
-                        ui.hyperlink_to(lang.text("Official release", "官方发布"), spec.url);
-                        ui.hyperlink_to(lang.text("Source", "源码"), spec.source_url);
-                        ui.hyperlink_to(lang.text("License", "许可"), spec.license_url);
-                    });
+                    );
                 }
-                hint(ui, lang.text(
-                "Downloads are optional and never overwrite files or enable PXE. Linux files and boot.wim must be supplied by you; Windows images are not downloaded.",
-                "下载为可选操作，不覆盖文件、不自动启用 PXE。Linux 文件和 boot.wim 需自行准备，不会下载 Windows 镜像。"));
-                if let Some(result) = &self.pxe_download {
-                    match result {
-                        Ok(report) => {
-                            for path in &report.saved {
-                                ui.label(format!("{}: {path}", lang.text("Saved", "已保存")));
-                            }
-                            for path in &report.skipped {
-                                ui.label(format!(
-                                    "{}: {path}",
-                                    lang.text("Already exists; not overwritten", "已存在，未覆盖")
-                                ));
-                            }
-                        }
-                        Err(error) => {
-                            ui.colored_label(
-                                RED,
-                                lang.text("Download failed or cancelled", "下载失败或已取消"),
-                            );
-                            ui.add(egui::Label::new(error).wrap().selectable(true));
-                        }
+                for (ready, tab, action, requirement) in [
+                (
+                    http_ready,
+                    SettingsTab::Http,
+                    lang.text("HTTP settings", "HTTP 设置"),
+                    lang.text(
+                        "HTTP: listen on the server IPv4 or 0.0.0.0, with a fixed nonzero port.",
+                        "HTTP：监听服务 IPv4 或 0.0.0.0，并使用非零固定端口。",
+                    ),
+                ),
+                (
+                    tftp_ready,
+                    SettingsTab::Tftp,
+                    lang.text("TFTP settings", "TFTP 设置"),
+                    lang.text(
+                        "TFTP: listen on the server IPv4 or 0.0.0.0, on port 69.",
+                        "TFTP：监听服务 IPv4 或 0.0.0.0，端口为 69。",
+                    ),
+                ),
+            ] {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        if ready { GREEN } else { MUTED },
+                        if ready {
+                            lang.text("Configured", "已满足")
+                        } else {
+                            lang.text("Needs settings", "需设置")
+                        },
+                    );
+                    ui.label(requirement);
+                    if !ready && ui.small_button(action).clicked() {
+                        self.open_settings(tab);
                     }
-                }
+                });
+            }
+                hint(ui, lang.text(
+                "File checks also verify the local interface and boot files. Start HTTP and TFTP on the Services page before ProxyDHCP.",
+                "文件检查还会验证本机接口与启动文件。使用 ProxyDHCP 时，先到“服务”页启动 HTTP 和 TFTP。"));
             },
         );
         ui.add_space(14.0);
@@ -605,6 +633,15 @@ impl FilemuxApp {
                     });
                     let pxe = &mut self.form.config.pxe;
                     let count = pxe.entries.len();
+                    if pxe.entries.is_empty() {
+                        hint(
+                            ui,
+                            lang.text(
+                                "Add the system or local iPXE script you want clients to boot.",
+                                "添加要让客户端启动的系统或本地 iPXE 脚本。",
+                            ),
+                        );
+                    }
                     for (index, entry) in pxe.entries.iter_mut().enumerate() {
                         ui.push_id(("pxe-entry", index), |ui| {
                             ui.separator();
@@ -739,24 +776,47 @@ impl FilemuxApp {
             false,
             |ui| {
                 let pxe = &self.form.config.pxe;
-                ui.add(
-                    egui::Label::new(format!(
-                        "{}: http://{}:{}/.filemux-pxe/menu.ipxe",
-                        lang.text("Menu URL", "菜单 URL"),
-                        self.form.pxe_server_ip,
-                        self.form.config.http.bind.port()
-                    ))
-                    .wrap()
-                    .selectable(true),
-                );
-                ui.add(
-                    egui::Label::new(format!(
-                        "next-server: {} · BIOS: {} · UEFI x64: {}",
-                        self.form.pxe_server_ip, pxe.bios_bootfile, pxe.uefi_x64_bootfile
-                    ))
-                    .wrap()
-                    .selectable(true),
-                );
+                if let Some((address, url)) = &self.pxe_menu_url {
+                    ui.label(lang.text("Menu URL preview", "菜单 URL 预览"));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::Label::new(RichText::new(url).monospace())
+                                .wrap()
+                                .selectable(true),
+                        );
+                        crate::copy_button(
+                            ui,
+                            lang,
+                            url,
+                            lang.text("Copy menu URL", "复制菜单地址"),
+                        );
+                    });
+                    ui.add(
+                        egui::Label::new(format!(
+                            "next-server: {} · BIOS: {} · UEFI x64: {}",
+                            address.ip(),
+                            pxe.bios_bootfile,
+                            pxe.uefi_x64_bootfile
+                        ))
+                        .wrap()
+                        .selectable(true),
+                    );
+                    hint(ui, lang.text(
+                        "Use after enabling and saving PXE settings, then starting HTTP and TFTP. This preview does not mean the menu is running.",
+                        "启用并保存 PXE 设置，启动 HTTP 和 TFTP 后再使用；预览不表示菜单正在运行。",
+                    ));
+                    if address.ip().is_loopback() {
+                        hint(ui, lang.text(
+                            "Loopback is for local checks only; PXE clients need a reachable server IPv4.",
+                            "本机回环地址仅供本机检查；PXE 客户端需要能够访问的服务 IPv4。",
+                        ));
+                    }
+                } else {
+                    hint(ui, lang.text(
+                        "Complete the server IPv4 and HTTP listening settings above to generate a menu URL and DHCP values.",
+                        "先完成上方服务 IPv4 与 HTTP 监听设置，再生成菜单地址和 DHCP 参数。",
+                    ));
+                }
                 hint(ui, lang.text(
                 "External DHCP: use option 93 to select BIOS x86 or UEFI x64 on the first request. For clients already in iPXE, return the menu URL instead of a binary.",
                 "外部 DHCP：首次请求按 option 93 区分 BIOS x86 与 UEFI x64；已进入 iPXE 的请求返回菜单 URL，不要再次返回二进制文件。"));
@@ -815,6 +875,101 @@ impl FilemuxApp {
                 hint(ui, lang.text("BIOS x86 / UEFI x64, one IPv4 interface and subnet only. No relay, IPv6 or Secure Boot. Loopback addresses are for local software checks only.", "仅支持 BIOS x86／UEFI x64、单 IPv4 接口和同一子网；不支持 relay、IPv6 或 Secure Boot。loopback 仅供本机软件验证。"));
             },
         );
+        ui.add_space(14.0);
+        egui::CollapsingHeader::new(lang.text(
+            "Boot program paths and optional downloads",
+            "启动程序路径与可选下载",
+        ))
+            .id_salt("pxe-boot-programs")
+            .show(ui, |ui| {
+                ui.add_enabled_ui(editable, |ui| {
+                    pxe_field(
+                        ui,
+                        lang.text("BIOS x86 iPXE", "BIOS x86 iPXE 文件"),
+                        &mut self.form.config.pxe.bios_bootfile,
+                    );
+                    pxe_field(
+                        ui,
+                        lang.text("UEFI x64 iPXE", "UEFI x64 iPXE 文件"),
+                        &mut self.form.config.pxe.uefi_x64_bootfile,
+                    );
+                    pxe_field(
+                        ui,
+                        lang.text("wimboot (Windows PE only)", "wimboot（仅 Windows PE 需要）"),
+                        &mut self.form.config.pxe.wimboot,
+                    );
+                });
+                hint(ui, lang.text("All file paths are relative to the shared directory; use /. Parent directories must already exist.", "所有文件路径均相对于共享目录，使用 /；父目录须已存在。"));
+                let can_download = editable
+                    && self.saved_form.is_some()
+                    && !self.dirty()
+                    && self.operation.is_none()
+                    && self.picking.is_none();
+                for tool in [BootTool::Ipxe, BootTool::Wimboot] {
+                    let spec = tool.spec();
+                    ui.separator();
+                    let title = match tool {
+                        BootTool::Ipxe => "iPXE",
+                        BootTool::Wimboot => "wimboot",
+                    };
+                    let targets = match tool {
+                        BootTool::Ipxe => format!(
+                            "{} · {}",
+                            self.form.config.pxe.bios_bootfile,
+                            self.form.config.pxe.uefi_x64_bootfile
+                        ),
+                        BootTool::Wimboot => self.form.config.pxe.wimboot.clone(),
+                    };
+                    ui.label(format!("{title} {} · {targets}", spec.version));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                can_download,
+                                egui::Button::new(format!(
+                                    "{} {title}",
+                                    lang.text("Download", "下载")
+                                )),
+                            )
+                            .on_disabled_hover_text(lang.text(
+                                "Save changes and wait for other operations before downloading.",
+                                "请先保存修改，并等待其他操作完成后下载。",
+                            ))
+                            .clicked()
+                        {
+                            self.request(Command::DownloadBootTool(tool));
+                        }
+                        ui.hyperlink_to(lang.text("Official release", "官方发布"), spec.url);
+                        ui.hyperlink_to(lang.text("Source", "源码"), spec.source_url);
+                        ui.hyperlink_to(lang.text("License", "许可"), spec.license_url);
+                    });
+                }
+                hint(ui, lang.text(
+                "Downloads are optional and never overwrite files or enable PXE. Linux files and boot.wim must be supplied by you; Windows images are not downloaded.",
+                "下载为可选操作，不覆盖文件、不自动启用 PXE。Linux 文件和 boot.wim 需自行准备，不会下载 Windows 镜像。"));
+                if let Some(result) = &self.pxe_download {
+                    match result {
+                        Ok(report) => {
+                            for path in &report.saved {
+                                ui.label(format!("{}: {path}", lang.text("Saved", "已保存")));
+                            }
+                            for path in &report.skipped {
+                                ui.label(format!(
+                                    "{}: {path}",
+                                    lang.text("Already exists; not overwritten", "已存在，未覆盖")
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            ui.colored_label(
+                                RED,
+                                lang.text("Download failed or cancelled", "下载失败或已取消"),
+                            );
+                            ui.add(egui::Label::new(error).wrap().selectable(true));
+                        }
+                    }
+                }
+            });
+        ui.add_space(14.0);
     }
 }
 
@@ -855,6 +1010,7 @@ fn bind_fields(
     id: &'static str,
     ip: &mut String,
     address: &mut SocketAddr,
+    focus_port: bool,
 ) {
     let port_width = 112.0;
     let ip_width = (ui.available_width() - port_width - ui.spacing().item_spacing.x).max(80.0);
@@ -880,6 +1036,10 @@ fn bind_fields(
             });
             if response.inner.changed() {
                 address.set_port(port);
+            }
+            if focus_port {
+                response.inner.request_focus();
+                response.inner.scroll_to_me(Some(egui::Align::Center));
             }
             ui.end_row();
         });
