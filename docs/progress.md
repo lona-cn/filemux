@@ -3,7 +3,7 @@
 ## 当前状态
 
 - 阶段一需求与验收条件已整理到 `docs/phase-1.md`。
-- 阶段一功能与三 crate 合并已完成，workspace 仅含 `filemux-core`、`filemux-cli`、`filemux-gui`。GUI 已按“服务 / 设置 / 日志”分开布局并支持双语，HTTP 已支持独立启用上传；本轮三个 crate 的版本统一为 `0.2.0`。
+- 阶段一功能与三 crate 合并已完成，workspace 仅含 `filemux-core`、`filemux-cli`、`filemux-gui`。GUI 已按“服务 / 设置 / 日志”分开布局并支持双语，HTTP 已支持独立启用上传；0.2.0 发布时三个 crate 的版本统一为 `0.2.0`。
 - 初版预览为 `docs/previews/phase-1.webp`。新版先生成并检查 `docs/previews/gui-layout-services.webp` 和 `docs/previews/gui-layout-nfs-settings.webp`，用户确认后才开始拆解与实现；图片示例不是实际服务结果。
 - 后续继续开发前先核对项目实际状态，保留已有改动，不重复初始化。Linux/macOS GUI 窗口及硬件启动的未验证范围见文末。
 - 下列原阶段一的 GUI 验收记录对应旧布局，不能代替新版交互验收。新版改动与实际验证范围见文末。
@@ -297,3 +297,9 @@
 | 清理 | 三个测试 GUI 均正常退出，退出码为 0；关闭运行窗口后 HTTP 不再接受连接。临时 UDP 占用 socket 已关闭，自建配置、共享文件、state、截图和脚本已清理，未修改用户配置、系统服务或防火墙。 |
 
 本轮未执行 Linux／macOS GUI、完整键盘／读屏验收、实际客户端 NFS 挂载、物理 PXE 启动或远端 CI；不以命令示例检查代替这些验证。未修改版本、提交、推送或发布。
+
+## 0.3.0 版本更新
+
+- workspace、CLI 和 GUI 对 core 的依赖版本及 Cargo.lock 中三个项目包的版本更新为 `0.3.0`。
+- Windows 上 `cargo fmt --all -- --check`、`cargo test --workspace --locked` 和 `cargo build --workspace --locked` 均通过；测试共 84 项通过。CLI 和 GUI 的 `--version` 分别输出 `filemux 0.3.0` 和 `filemux-gui 0.3.0`。
+- 发布元数据检查 `python .github/scripts/release.py metadata --tag v0.3.0` 通过；Linux、macOS 构建结果以远端 CI 为准。

@@ -18,7 +18,7 @@ name = "filemux-gui"
 path = "src/main.rs"
 
 [dependencies]
-filemux-core = { version = "0.2.0", path = "../filemux-core" }
+filemux-core = { version = "0.3.0", path = "../filemux-core" }
 anyhow.workspace = true
 eframe = { workspace = true, features = ["persistence"] }
 clap.workspace = true

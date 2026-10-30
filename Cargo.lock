@@ -1396,7 +1396,7 @@ dependencies = [
 
 [[package]]
 name = "filemux-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "filemux-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "filemux-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
