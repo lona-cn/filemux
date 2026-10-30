@@ -238,3 +238,31 @@
 - 批量 dry-run 在 CLI 解析 `filemux-core ^0.2.0` 时停止：registry 中尚无该版本。正式发布按 core → CLI → GUI 进行，下游包在 core 可用后执行解包构建，不使用 `--no-verify`。
 - 本节记录提交和上传前的本机检查；提交、推送、crates.io 发布及远端 CI 的最终结果以实际远程记录为准。不创建新 tag 或 GitHub Release。
 
+## PXE 菜单、工具下载与可选 ProxyDHCP
+
+### 已实现
+
+- 新增默认关闭的 `pxe` 配置，旧 TOML 继续可用；支持外部 DHCP 和 ProxyDHCP。菜单包含 Linux、Windows PE、本地 iPXE 脚本，支持排序、默认项与人工等待；检查资源不创建 state。
+- HTTP 使用现有监听器提供 `/.filemux-pxe/menu.ipxe`，支持 GET／HEAD、禁止写入、禁用缓存；共享资源继续经过原文件访问限制。标题和参数通过 iPXE hex setting 传入，资源 URL 按组件编码。
+- 可主动下载固定官方 iPXE 2.0.0、wimboot 2.9.0，校验 HTTPS 和固定 SHA-256；限制下载与解压大小，只提取两个指定常规文件，复用无覆盖发布。保留已有文件，失败／取消清理临时文件；不附带二进制、不下载 Windows 镜像。
+- ProxyDHCP 实现 Windows、Linux、macOS 接口收发路径，监听 UDP 67／4011，按接收接口筛选；只提供启动信息，不分配租约，不响应其他 DHCP 的地址请求、未知架构或 relay。HTTP／TFTP 是启动依赖，停止与健康检查会维护这些限制。
+- GUI 新增双语 PXE 页、独立后台文件任务、ProxyDHCP 服务行与日志筛选；保存不会更改正在运行的服务。README 与配置示例已更新。
+
+### 实际验证与限制
+
+| 检查 | 实际结果 |
+| --- | --- |
+| Windows 测试与构建 | `cargo test --workspace --locked`：80 项通过。之后仅重跑受影响的 GUI 8 项、ProxyDHCP 2 项，均通过；最终 `cargo build --workspace --locked` 通过。保留现有 license/license-file 清单提示。 |
+| Linux 测试 | WSL Ubuntu 24.04 执行计划中的 workspace 命令。首轮发现新增测试错误地假定共享根内目录链接一律禁止；删除该实现细节断言，补充根外链接检查，不修改现有文件访问规则。受影响测试与此前尚未运行的所有 suite 分别通过，最终 82 个测试项通过，doc-tests 为 0 项。未重复全量运行。 |
+| 固定官方下载 | 真实 CLI 成功从官方 Release 下载两个 iPXE 文件和 wimboot；再次下载报告“已存在，未覆盖”，文件摘要未改变。Linux 复用这些已验证文件，未重复联网下载。 |
+| Windows CLI 协议 | 首轮真实标准端口 smoke 通过：外部 DHCP 菜单 GET／HEAD、资源字节比对、TFTP 两种 iPXE 文件传输、67／4011 BIOS／UEFI／iPXE OFFER／ACK、无租约选项、其他 server identifier 请求不回复、后续合法请求仍回复、正常退出与绑定失败回滚。均为 loopback 软件客户端，不是物理广播或完整开机。最终独占绑定后的标准端口限制见下文。 |
+| Linux CLI 协议 | 原生 WSL 临时目录上运行 Linux 自身 CLI，HTTP 18080、TFTP 69、ProxyDHCP 67／4011 的同等检查全部通过；SIGTERM 后正常退出，各监听可重绑，真实端口冲突时回滚。最初 `/mnt/e` 的 DrvFS 共享根缺少所需创建时间，程序明确拒绝；随后仅将 smoke share/state 改至 WSL 原生临时目录，没有放宽身份检查。 |
+| Windows socket 修正 | 实测 Winsock 克隆句柄上的 SO_RCVTIMEO／SO_BROADCAST 没有同步到原句柄。Windows 改为借用原 socket 设置选项，高端口真实 UDP 测试验证收发、超长／畸形报文后继续服务、200ms 取消检查和停止后重绑。Linux／macOS 保留共享句柄方式。 |
+| Windows 同机 DHCP 冲突 | 后续检查发现 `SharedAccess`（PID 4144）占用 `172.21.160.1:67`。最终 Windows 增加 SO_EXCLUSIVEADDRUSE，防止与同机 DHCP 共用端口；实际 CLI 启动明确报 10048，HTTP／TFTP 回滚，18080／69／4011 可重新绑定。没有停止系统服务；最终独占版本的 Windows 标准端口代理收发受此占用限制，不能把首轮结果写成最终版本再次通过。最终代理收发由 Windows 随机高端口测试验证。 |
+| Windows GUI | 真实窗口 AX 操作验证模式切换、检查与旧结果清空、主动下载保留现有文件、菜单新增／删除／上下移／默认项保存、运行中保存仍保留原设置、先启动依赖再启动代理、代理运行时禁用依赖停止、实际两个 UDP 端点、ProxyDHCP 日志筛选及双语切换。通过正常关闭验证进程退出。服务列已按真实截图修正宽度，ProxyDHCP 名称与中文访问权限不再断行。 |
+| GUI 视觉范围 | 实际查看服务页及 PXE 设置顶部的普通／最大化窗口。后台滚轮没有滚动页面；前台控制请求未获答复，键盘回退被 Windows 拒绝。因此菜单下部与检查结果的滚动布局没有完成视觉验收；相关控件已通过 AX 操作，不以此替代滚动布局截图。 |
+| 超时编辑框可访问名称 | GUI 审查发现超时数值没有关联可见标签；已沿用端口编辑框的 `.labelled_by(label.id)` 修复，最终 GUI 构建通过。桌面会话关闭后，JS／Python 工具只返回 undefined／None，重建 Eval 上下文也未恢复，已报告工具问题；新标签的原生 AX 复验未执行。 |
+| 文档与格式 | 配置示例通过 TOML 解析，PXE 默认关闭、空菜单；`cargo fmt --all -- --check` 通过。未触发远程 CI。 |
+| 清理 | 本任务 CLI／GUI 进程均已退出，桌面控制已释放；一次性 smoke 脚本、下载工具、传输 fixture、独立 state 与 WSL 原生临时目录均已清理。保留源码、文档和正常构建产物，没有停止 SharedAccess 或其他用户服务。 |
+
+本轮不宣称 macOS 实机、Linux/macOS GUI、真实路由器 DHCP 互操作、物理 PXE 固件或完整 Linux／WinPE 开机通过；不支持 IPv6、relay、Secure Boot、ARM64 客户端、任意 ISO 导入或 Windows 安装。未安装虚拟机／ADK，不修改防火墙、系统服务或用户凭据，未提交或推送。

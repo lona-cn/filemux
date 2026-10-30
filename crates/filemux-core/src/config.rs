@@ -30,6 +30,7 @@ pub struct Config {
     pub http: HttpConfig,
     pub tftp: TftpConfig,
     pub nfs: NfsConfig,
+    pub pxe: PxeConfig,
 }
 
 impl Default for Config {
@@ -40,6 +41,7 @@ impl Default for Config {
             http: HttpConfig::default(),
             tftp: TftpConfig::default(),
             nfs: NfsConfig::default(),
+            pxe: PxeConfig::default(),
         }
     }
 }
@@ -162,6 +164,9 @@ impl Config {
                 }
             }
         }
+        if self.pxe.enabled {
+            crate::pxe::validate_config(self)?;
+        }
         Ok(())
     }
 }
@@ -170,6 +175,82 @@ fn same_listener(a: SocketAddr, b: SocketAddr) -> bool {
     a.port() != 0
         && a.port() == b.port()
         && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PxeMode {
+    #[default]
+    ExternalDhcp,
+    ProxyDhcp,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PxeConfig {
+    pub enabled: bool,
+    pub mode: PxeMode,
+    pub server_ip: Ipv4Addr,
+    pub bios_bootfile: String,
+    pub uefi_x64_bootfile: String,
+    pub wimboot: String,
+    pub default_entry: Option<String>,
+    pub timeout_secs: u16,
+    pub entries: Vec<PxeEntry>,
+}
+
+impl Default for PxeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: PxeMode::ExternalDhcp,
+            server_ip: Ipv4Addr::UNSPECIFIED,
+            bios_bootfile: "undionly.kpxe".into(),
+            uefi_x64_bootfile: "snponly.efi".into(),
+            wimboot: "wimboot".into(),
+            default_entry: None,
+            timeout_secs: 10,
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PxeEntry {
+    Linux {
+        id: String,
+        title: String,
+        kernel: String,
+        initrd: String,
+        args: String,
+    },
+    Winpe {
+        id: String,
+        title: String,
+        boot_wim: String,
+    },
+    Chain {
+        id: String,
+        title: String,
+        script: String,
+    },
+}
+
+impl PxeEntry {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Linux { id, .. } | Self::Winpe { id, .. } | Self::Chain { id, .. } => id,
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        match self {
+            Self::Linux { title, .. } | Self::Winpe { title, .. } | Self::Chain { title, .. } => {
+                title
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

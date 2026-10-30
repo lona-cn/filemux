@@ -1,7 +1,10 @@
 use crate::i18n::{Language, LanguagePreference};
+use crate::worker::PxeTask;
 use crate::worker::{Command, DirectoryTarget};
 use crate::{ACCENT, BORDER, FilemuxApp, GREEN, MUTED, PANEL, RED, SettingsTab};
 use eframe::egui::{self, RichText, Stroke};
+use filemux_core::pxe::download::BootTool;
+use filemux_core::{PxeEntry, PxeMode};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -15,6 +18,7 @@ impl FilemuxApp {
                     (SettingsTab::Http, "HTTP"),
                     (SettingsTab::Tftp, "TFTP"),
                     (SettingsTab::Nfs, "NFSv3"),
+                    (SettingsTab::Pxe, "PXE"),
                 ] {
                     ui.selectable_value(&mut self.settings_tab, tab, title);
                     ui.add_space(10.0);
@@ -51,6 +55,12 @@ impl FilemuxApp {
                     );
                     ui.add_space(8.0);
                 }
+                if self.pxe_task.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        hint(ui, lang.text("Checking or downloading PXE files. You can switch pages and stop services.", "正在检查或下载 PXE 文件；仍可切页和停止服务。"));
+                    });
+                }
                 if let Some(target) = self.picking {
                     ui.horizontal_wrapped(|ui| {
                         ui.spinner();
@@ -83,6 +93,7 @@ impl FilemuxApp {
                     SettingsTab::Http => self.draw_http_settings(ui),
                     SettingsTab::Tftp => self.draw_tftp_settings(ui),
                     SettingsTab::Nfs => self.draw_nfs_settings(ui),
+                    SettingsTab::Pxe => self.draw_pxe_settings(ui),
                 }
                 ui.add_space(12.0);
                 hint(
@@ -432,6 +443,379 @@ impl FilemuxApp {
             },
         );
     }
+
+    fn draw_pxe_settings(&mut self, ui: &mut egui::Ui) {
+        let lang = self.language();
+        let editable = self.edits_allowed();
+        settings_card(ui, lang, lang.text("PXE boot", "PXE 启动"), false, |ui| {
+            ui.add_enabled_ui(editable, |ui| {
+                ui.checkbox(
+                    &mut self.form.config.pxe.enabled,
+                    lang.text("Enable PXE menu", "启用 PXE 菜单"),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(
+                        &mut self.form.config.pxe.mode,
+                        PxeMode::ExternalDhcp,
+                        lang.text("External DHCP", "外部 DHCP"),
+                    );
+                    ui.selectable_value(
+                        &mut self.form.config.pxe.mode,
+                        PxeMode::ProxyDhcp,
+                        "ProxyDHCP",
+                    );
+                });
+            });
+            hint(ui, lang.text(
+                "Both modes need an existing DHCP server to assign IP addresses. Filemux does not change router settings.",
+                "两种模式都需要原 DHCP 分配 IP；Filemux 不修改路由器设置。"));
+            if self.form.config.pxe.mode == PxeMode::ProxyDhcp {
+                hint(ui, lang.text(
+                    "ProxyDHCP only supplies boot information on the selected IPv4 interface. UDP 67/4011 must be free; privileges may be required. Firewall rules are not changed.",
+                    "ProxyDHCP 不分配 IP，只向所选 IPv4 所属接口提供启动信息。UDP 67/4011 须未被占用，可能需要权限；不会修改防火墙。"));
+            }
+            ui.add_space(8.0);
+            ui.add_enabled_ui(editable, |ui| {
+                pxe_field(
+                    ui,
+                    lang.text("Server IPv4", "服务 IPv4"),
+                    &mut self.form.pxe_server_ip,
+                );
+            });
+            hint(ui, lang.text(
+                "Choose a local IPv4 reachable by clients. HTTP must listen there or on 0.0.0.0 with a fixed port; TFTP must use port 69.",
+                "填写客户端可访问的本机 IPv4；HTTP 须监听该 IP 或 0.0.0.0 并使用固定端口，TFTP 须使用 69 端口。"));
+        });
+        ui.add_space(14.0);
+        settings_card(
+            ui,
+            lang,
+            lang.text("Boot programs", "启动程序"),
+            false,
+            |ui| {
+                ui.add_enabled_ui(editable, |ui| {
+                    pxe_field(
+                        ui,
+                        lang.text("BIOS x86 iPXE", "BIOS x86 iPXE 文件"),
+                        &mut self.form.config.pxe.bios_bootfile,
+                    );
+                    pxe_field(
+                        ui,
+                        lang.text("UEFI x64 iPXE", "UEFI x64 iPXE 文件"),
+                        &mut self.form.config.pxe.uefi_x64_bootfile,
+                    );
+                    pxe_field(
+                        ui,
+                        lang.text("wimboot (Windows PE only)", "wimboot（仅 Windows PE 需要）"),
+                        &mut self.form.config.pxe.wimboot,
+                    );
+                });
+                hint(ui, lang.text("All file paths are relative to the shared directory; use /. Parent directories must already exist.", "所有文件路径均相对于共享目录，使用 /；父目录须已存在。"));
+                let can_download = editable
+                    && self.saved_form.is_some()
+                    && !self.dirty()
+                    && self.operation.is_none()
+                    && self.picking.is_none();
+                for tool in [BootTool::Ipxe, BootTool::Wimboot] {
+                    let spec = tool.spec();
+                    ui.separator();
+                    let title = match tool {
+                        BootTool::Ipxe => "iPXE",
+                        BootTool::Wimboot => "wimboot",
+                    };
+                    let targets = match tool {
+                        BootTool::Ipxe => format!(
+                            "{} · {}",
+                            self.form.config.pxe.bios_bootfile,
+                            self.form.config.pxe.uefi_x64_bootfile
+                        ),
+                        BootTool::Wimboot => self.form.config.pxe.wimboot.clone(),
+                    };
+                    ui.label(format!("{title} {} · {targets}", spec.version));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                can_download,
+                                egui::Button::new(format!(
+                                    "{} {title}",
+                                    lang.text("Download", "下载")
+                                )),
+                            )
+                            .on_disabled_hover_text(lang.text(
+                                "Save changes and wait for other operations before downloading.",
+                                "请先保存修改，并等待其他操作完成后下载。",
+                            ))
+                            .clicked()
+                        {
+                            self.request(Command::DownloadBootTool(tool));
+                        }
+                        ui.hyperlink_to(lang.text("Official release", "官方发布"), spec.url);
+                        ui.hyperlink_to(lang.text("Source", "源码"), spec.source_url);
+                        ui.hyperlink_to(lang.text("License", "许可"), spec.license_url);
+                    });
+                }
+                hint(ui, lang.text(
+                "Downloads are optional and never overwrite files or enable PXE. Linux files and boot.wim must be supplied by you; Windows images are not downloaded.",
+                "下载为可选操作，不覆盖文件、不自动启用 PXE。Linux 文件和 boot.wim 需自行准备，不会下载 Windows 镜像。"));
+                if let Some(result) = &self.pxe_download {
+                    match result {
+                        Ok(report) => {
+                            for path in &report.saved {
+                                ui.label(format!("{}: {path}", lang.text("Saved", "已保存")));
+                            }
+                            for path in &report.skipped {
+                                ui.label(format!(
+                                    "{}: {path}",
+                                    lang.text("Already exists; not overwritten", "已存在，未覆盖")
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            ui.colored_label(
+                                RED,
+                                lang.text("Download failed or cancelled", "下载失败或已取消"),
+                            );
+                            ui.add(egui::Label::new(error).wrap().selectable(true));
+                        }
+                    }
+                }
+            },
+        );
+        ui.add_space(14.0);
+        settings_card(
+            ui,
+            lang,
+            lang.text("Boot menu", "启动菜单"),
+            false,
+            |ui| {
+                let mut action = None;
+                ui.add_enabled_ui(editable, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let label =
+                            ui.label(lang.text("Selection timeout (seconds)", "选择超时（秒）"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.form.config.pxe.timeout_secs)
+                                .range(0..=u16::MAX),
+                        )
+                        .labelled_by(label.id);
+                        hint(
+                            ui,
+                            lang.text("0 waits for manual selection", "0 表示等待人工选择"),
+                        );
+                    });
+                    let pxe = &mut self.form.config.pxe;
+                    let count = pxe.entries.len();
+                    for (index, entry) in pxe.entries.iter_mut().enumerate() {
+                        ui.push_id(("pxe-entry", index), |ui| {
+                            ui.separator();
+                            let selected = pxe
+                                .default_entry
+                                .as_deref()
+                                .map(|id| id == entry.id())
+                                .unwrap_or(index == 0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(match entry {
+                                    PxeEntry::Linux { .. } => "Linux",
+                                    PxeEntry::Winpe { .. } => "Windows PE",
+                                    PxeEntry::Chain { .. } => "iPXE",
+                                });
+                                if ui
+                                    .radio(selected, lang.text("Default", "默认启动"))
+                                    .clicked()
+                                {
+                                    pxe.default_entry = Some(entry.id().into());
+                                }
+                                if ui
+                                    .add_enabled(
+                                        index > 0,
+                                        egui::Button::new(lang.text("Move up", "上移")),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some((index, -1));
+                                }
+                                if ui
+                                    .add_enabled(
+                                        index + 1 < count,
+                                        egui::Button::new(lang.text("Move down", "下移")),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some((index, 1));
+                                }
+                                if ui.button(lang.text("Delete", "删除")).clicked() {
+                                    action = Some((index, 0));
+                                }
+                            });
+                            let (id, title) = match entry {
+                                PxeEntry::Linux { id, title, .. }
+                                | PxeEntry::Winpe { id, title, .. }
+                                | PxeEntry::Chain { id, title, .. } => (id, title),
+                            };
+                            pxe_field(ui, "ID", id);
+                            if selected && pxe.default_entry.is_some() {
+                                pxe.default_entry = Some(id.clone());
+                            }
+                            pxe_field(ui, lang.text("Title", "标题"), title);
+                            match entry {
+                                PxeEntry::Linux {
+                                    kernel,
+                                    initrd,
+                                    args,
+                                    ..
+                                } => {
+                                    pxe_field(ui, lang.text("Kernel file", "内核文件"), kernel);
+                                    pxe_field(ui, lang.text("Initrd file", "initrd 文件"), initrd);
+                                    pxe_field(ui, lang.text("Kernel arguments", "内核参数"), args);
+                                }
+                                PxeEntry::Winpe { boot_wim, .. } => {
+                                    pxe_field(ui, "boot.wim", boot_wim)
+                                }
+                                PxeEntry::Chain { script, .. } => pxe_field(
+                                    ui,
+                                    lang.text("Local iPXE script", "本地 iPXE 脚本"),
+                                    script,
+                                ),
+                            }
+                        });
+                    }
+                    if let Some((index, direction)) = action {
+                        match direction {
+                            -1 => pxe.entries.swap(index, index - 1),
+                            1 => pxe.entries.swap(index, index + 1),
+                            _ => {
+                                if pxe.default_entry.as_deref() == Some(pxe.entries[index].id()) {
+                                    pxe.default_entry = None;
+                                }
+                                pxe.entries.remove(index);
+                            }
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        for (prefix, label) in [
+                            ("linux", lang.text("Add Linux", "添加 Linux")),
+                            ("winpe", lang.text("Add Windows PE", "添加 Windows PE")),
+                            ("chain", lang.text("Add iPXE script", "添加 iPXE 脚本")),
+                        ] {
+                            if ui.button(label).clicked() {
+                                let id = (1..)
+                                    .map(|number| format!("{prefix}{number}"))
+                                    .find(|id| !pxe.entries.iter().any(|entry| entry.id() == id))
+                                    .expect("available ID");
+                                pxe.entries.push(match prefix {
+                                    "linux" => PxeEntry::Linux {
+                                        id,
+                                        title: "Linux".into(),
+                                        kernel: String::new(),
+                                        initrd: String::new(),
+                                        args: String::new(),
+                                    },
+                                    "winpe" => PxeEntry::Winpe {
+                                        id,
+                                        title: "Windows PE".into(),
+                                        boot_wim: String::new(),
+                                    },
+                                    _ => PxeEntry::Chain {
+                                        id,
+                                        title: "iPXE".into(),
+                                        script: String::new(),
+                                    },
+                                });
+                            }
+                        }
+                    });
+                });
+                hint(ui, lang.text(
+                "IDs must be unique. Without an explicit default, the first entry is used. Failed boots return to a menu without a countdown.",
+                "ID 不可重复；未指定默认项时使用第一项。启动失败后返回菜单，不再次倒计时。"));
+            },
+        );
+        ui.add_space(14.0);
+        settings_card(
+            ui,
+            lang,
+            lang.text("Files and DHCP settings", "文件检查与 DHCP 设置"),
+            false,
+            |ui| {
+                let pxe = &self.form.config.pxe;
+                ui.add(
+                    egui::Label::new(format!(
+                        "{}: http://{}:{}/.filemux-pxe/menu.ipxe",
+                        lang.text("Menu URL", "菜单 URL"),
+                        self.form.pxe_server_ip,
+                        self.form.config.http.bind.port()
+                    ))
+                    .wrap()
+                    .selectable(true),
+                );
+                ui.add(
+                    egui::Label::new(format!(
+                        "next-server: {} · BIOS: {} · UEFI x64: {}",
+                        self.form.pxe_server_ip, pxe.bios_bootfile, pxe.uefi_x64_bootfile
+                    ))
+                    .wrap()
+                    .selectable(true),
+                );
+                hint(ui, lang.text(
+                "External DHCP: use option 93 to select BIOS x86 or UEFI x64 on the first request. For clients already in iPXE, return the menu URL instead of a binary.",
+                "外部 DHCP：首次请求按 option 93 区分 BIOS x86 与 UEFI x64；已进入 iPXE 的请求返回菜单 URL，不要再次返回二进制文件。"));
+                let can_check = editable && self.operation.is_none() && self.picking.is_none();
+                if ui
+                    .add_enabled(
+                        can_check,
+                        egui::Button::new(lang.text("Check boot files", "检查启动文件")),
+                    )
+                    .clicked()
+                {
+                    match self.form.build() {
+                        Ok(config) => self.request(Command::CheckPxe(config)),
+                        Err(error) => self.notice = Some(error),
+                    }
+                }
+                match &self.pxe_check {
+                    None => {
+                        ui.label(if self.pxe_task == Some(PxeTask::Check) {
+                            lang.text("Checking files…", "正在检查文件…")
+                        } else {
+                            lang.text("Not checked for these settings", "当前设置尚未检查")
+                        });
+                    }
+                    Some(Err(error)) => {
+                        ui.colored_label(RED, lang.text("File check failed", "文件检查失败"));
+                        ui.add(egui::Label::new(error).wrap().selectable(true));
+                    }
+                    Some(Ok(report)) => {
+                        ui.colored_label(
+                            if report.is_ok() { GREEN } else { RED },
+                            if report.is_ok() {
+                                lang.text("File check passed", "文件检查通过")
+                            } else {
+                                lang.text("File check failed", "文件检查失败")
+                            },
+                        );
+                        for resource in &report.resources {
+                            ui.add(
+                                egui::Label::new(format!(
+                                    "{} · {} — {}",
+                                    resource.name,
+                                    resource.path,
+                                    resource
+                                        .error
+                                        .as_deref()
+                                        .unwrap_or(lang.text("File exists", "文件存在"))
+                                ))
+                                .wrap()
+                                .selectable(true),
+                            );
+                        }
+                    }
+                }
+                hint(ui, lang.text("This only checks paths and non-empty regular files, not whether an image can boot. Files can change after checking.", "这里只检查路径与非空常规文件，不证明镜像可启动；检查后文件仍可能变化。"));
+                hint(ui, lang.text("BIOS x86 / UEFI x64, one IPv4 interface and subnet only. No relay, IPv6 or Secure Boot. Loopback addresses are for local software checks only.", "仅支持 BIOS x86／UEFI x64、单 IPv4 接口和同一子网；不支持 relay、IPv6 或 Secure Boot。loopback 仅供本机软件验证。"));
+            },
+        );
+    }
 }
 
 fn settings_card(
@@ -533,6 +917,15 @@ fn directory_field(
             picked();
         }
     });
+}
+
+fn pxe_field(ui: &mut egui::Ui, title: &str, value: &mut String) {
+    let label = ui.label(title);
+    ui.add_sized(
+        [ui.available_width(), 30.0],
+        egui::TextEdit::singleline(value),
+    )
+    .labelled_by(label.id);
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {

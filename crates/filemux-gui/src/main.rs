@@ -9,13 +9,14 @@ use chrono::{DateTime, Local};
 use clap::Parser;
 use eframe::egui::{self, Color32, FontFamily, FontId, RichText, Stroke, TextStyle};
 use filemux_core::engine::ServiceSnapshot;
+use filemux_core::pxe::{PxeCheckReport, download::DownloadReport};
 use filemux_core::{Config, Event, Protocol, ServiceState, Transport, default_config_path};
 use i18n::{Language, LanguagePreference, PREF_LANGUAGE_KEY, UiNotice, UiText};
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use worker::{Command, DirectoryTarget, MAX_LOGS, ServiceOperation, Worker};
+use worker::{Command, DirectoryTarget, MAX_LOGS, PxeTask, ServiceOperation, Worker};
 
 const BACKGROUND: Color32 = Color32::from_rgb(29, 33, 39);
 const PANEL: Color32 = Color32::from_rgb(34, 38, 45);
@@ -87,6 +88,7 @@ struct Form {
     nfs_ip: String,
     rpcbind_enabled: bool,
     rpcbind: String,
+    pxe_server_ip: String,
 }
 
 impl Form {
@@ -98,6 +100,7 @@ impl Form {
             tftp_ip: config.tftp.bind.ip().to_string(),
             nfs_ip: config.nfs.bind.ip().to_string(),
             rpcbind_enabled: config.nfs.rpcbind.is_some(),
+            pxe_server_ip: config.pxe.server_ip.to_string(),
             rpcbind: config
                 .nfs
                 .rpcbind
@@ -152,6 +155,20 @@ impl Form {
         } else {
             None
         };
+        config.pxe.server_ip = if self.pxe_server_ip.trim().is_empty() && !config.pxe.enabled {
+            std::net::Ipv4Addr::UNSPECIFIED
+        } else {
+            self.pxe_server_ip
+                .trim()
+                .parse()
+                .map_err(|error: std::net::AddrParseError| {
+                    UiNotice::with_detail(
+                        "Enter a valid PXE server IPv4 address.",
+                        "请输入有效的 PXE 服务 IPv4 地址。",
+                        error.to_string(),
+                    )
+                })?
+        };
         Ok(config)
     }
 }
@@ -197,6 +214,7 @@ enum SettingsTab {
     Http,
     Tftp,
     Nfs,
+    Pxe,
 }
 
 impl From<Protocol> for SettingsTab {
@@ -205,6 +223,7 @@ impl From<Protocol> for SettingsTab {
             Protocol::Http => Self::Http,
             Protocol::Tftp => Self::Tftp,
             Protocol::Nfs => Self::Nfs,
+            Protocol::ProxyDhcp => Self::Pxe,
         }
     }
 }
@@ -343,6 +362,10 @@ struct FilemuxApp {
     close_after_save: bool,
     closing: bool,
     allow_close: bool,
+    pxe_task: Option<PxeTask>,
+    pxe_check: Option<std::result::Result<PxeCheckReport, String>>,
+    pxe_check_form: Option<Form>,
+    pxe_download: Option<std::result::Result<DownloadReport, String>>,
 }
 
 impl FilemuxApp {
@@ -404,6 +427,10 @@ impl FilemuxApp {
             close_after_save: false,
             closing: false,
             allow_close: false,
+            pxe_task: None,
+            pxe_check: None,
+            pxe_check_form: None,
+            pxe_download: None,
         })
     }
 
@@ -459,6 +486,13 @@ impl FilemuxApp {
         self.operation = state.operation;
         self.saving = state.saving;
         self.picking = state.picking;
+        self.pxe_task = state.pxe_task;
+        if let Some(result) = state.pxe_check.take() {
+            self.pxe_check = Some(result);
+        }
+        if let Some(result) = state.pxe_download.take() {
+            self.pxe_download = Some(result);
+        }
         self.settings_in_use = state.settings_in_use;
         if let Some(notice) = state.notice.take() {
             self.notice = Some(notice);
@@ -525,6 +559,11 @@ impl FilemuxApp {
         } else {
             None
         };
+        let pxe_task = match &command {
+            Command::CheckPxe(_) => Some(PxeTask::Check),
+            Command::DownloadBootTool(tool) => Some(PxeTask::Download(*tool)),
+            _ => None,
+        };
         match self.worker.request(command) {
             Ok(()) => {
                 if operation.is_some() {
@@ -535,6 +574,15 @@ impl FilemuxApp {
                 }
                 if picking.is_some() {
                     self.picking = picking;
+                }
+                if let Some(task) = pxe_task {
+                    self.pxe_task = Some(task);
+                    if task == PxeTask::Check {
+                        self.pxe_check = None;
+                        self.pxe_check_form = Some(self.form.clone());
+                    } else {
+                        self.pxe_download = None;
+                    }
                 }
                 if saving || picking.is_some() {
                     self.notice = None;
@@ -584,7 +632,7 @@ impl FilemuxApp {
     }
 
     fn edits_allowed(&self) -> bool {
-        !self.saving && !self.closing
+        !self.saving && !self.closing && self.pxe_task.is_none()
     }
 
     fn save_blocker(&self) -> Option<UiText> {
@@ -595,6 +643,11 @@ impl FilemuxApp {
             ))
         } else if self.saving {
             Some(UiText::new("Saving settings", "正在保存设置"))
+        } else if self.pxe_task.is_some() {
+            Some(UiText::new(
+                "Wait for the PXE file task.",
+                "请等待 PXE 文件任务完成。",
+            ))
         } else if self.picking.is_some() {
             Some(UiText::new(
                 "Complete or cancel directory selection before saving.",
@@ -627,6 +680,11 @@ impl FilemuxApp {
             Some(UiText::new(
                 "Wait for settings to finish saving before starting a service.",
                 "正在保存设置，请稍候再启动服务。",
+            ))
+        } else if self.pxe_task.is_some() {
+            Some(UiText::new(
+                "Wait for the PXE file task before starting a service.",
+                "请等待 PXE 文件任务完成，再启动服务。",
             ))
         } else if self.saved_form.is_none() {
             Some(UiText::new(
@@ -922,8 +980,21 @@ impl FilemuxApp {
                         }
                         _ => view.snapshot.state,
                     };
-                    let start_reason = self.start_blocker();
-                    let can_stop = self.operation.is_none() && !self.closing;
+                    let start_reason = self.start_blocker().or_else(|| {
+                        if protocol != Protocol::ProxyDhcp { return None; }
+                        let config = self.saved_form.as_ref().map(|form| &form.config)?;
+                        if !config.pxe.enabled || config.pxe.mode != filemux_core::PxeMode::ProxyDhcp {
+                            Some(UiText::new("Enable ProxyDHCP mode in PXE settings.", "请到 PXE 设置启用 ProxyDHCP 模式。"))
+                        } else if ![Protocol::Http, Protocol::Tftp].iter().all(|dependency|
+                            self.services.iter().any(|service| service.snapshot.protocol == *dependency && service.snapshot.state == ServiceState::Running)) {
+                            Some(UiText::new("Start HTTP and TFTP before ProxyDHCP.", "请先启动 HTTP 和 TFTP，再启动 ProxyDHCP。"))
+                        } else { None }
+                    });
+                    let stop_reason = if matches!(protocol, Protocol::Http | Protocol::Tftp)
+                        && self.services.iter().any(|service| service.snapshot.protocol == Protocol::ProxyDhcp && service.snapshot.state == ServiceState::Running) {
+                        Some(UiText::new("Stop ProxyDHCP first.", "请先停止 ProxyDHCP。"))
+                    } else { None };
+                    let can_stop = self.operation.is_none() && !self.closing && stop_reason.is_none();
                     let access_config = if view.snapshot.state == ServiceState::Running {
                         Some(&self.active_config)
                     } else {
@@ -932,7 +1003,7 @@ impl FilemuxApp {
                     let upload = access_config.is_some_and(|config| match protocol {
                         Protocol::Http => config.http.allow_upload,
                         Protocol::Tftp => config.tftp.allow_upload,
-                        Protocol::Nfs => false,
+                        Protocol::Nfs | Protocol::ProxyDhcp => false,
                     });
                     let height = if view.listeners.len() > 1 { 94.0 } else { 62.0 };
                     service_columns(ui, widths, height, |column, ui| match column {
@@ -967,7 +1038,9 @@ impl FilemuxApp {
                             }
                         }
                         3 => {
-                            ui.label(if protocol == Protocol::Nfs {
+                            ui.label(if protocol == Protocol::ProxyDhcp {
+                                lang.text("Boot information only", "仅提供启动信息")
+                            } else if protocol == Protocol::Nfs {
                                 lang.text("Read-only", "只读")
                             } else if upload {
                                 lang.text("Upload enabled", "允许上传")
@@ -1007,7 +1080,7 @@ impl FilemuxApp {
                                         egui::Button::new(label).min_size(egui::vec2(70.0, 32.0)),
                                     )
                                     .on_disabled_hover_text(
-                                        start_reason.map(|reason| reason.get(lang)).unwrap_or(lang.text("Wait for the current service operation.", "请等待当前服务操作完成。")),
+                                        (if running { stop_reason } else { start_reason }).map(|reason| reason.get(lang)).unwrap_or(lang.text("Wait for the current service operation.", "请等待当前服务操作完成。")),
                                     )
                                     .clicked()
                                 {
@@ -1263,6 +1336,7 @@ fn protocol_label(protocol: Protocol) -> &'static str {
         Protocol::Http => "HTTP",
         Protocol::Tftp => "TFTP",
         Protocol::Nfs => "NFSv3",
+        Protocol::ProxyDhcp => "ProxyDHCP",
     }
 }
 
@@ -1271,9 +1345,15 @@ fn operation_label(operation: ServiceOperation, language: Language) -> &'static 
         ServiceOperation::Start(Protocol::Http) => language.text("Starting HTTP", "正在启动 HTTP"),
         ServiceOperation::Start(Protocol::Tftp) => language.text("Starting TFTP", "正在启动 TFTP"),
         ServiceOperation::Start(Protocol::Nfs) => language.text("Starting NFSv3", "正在启动 NFSv3"),
+        ServiceOperation::Start(Protocol::ProxyDhcp) => {
+            language.text("Starting ProxyDHCP", "正在启动 ProxyDHCP")
+        }
         ServiceOperation::Stop(Protocol::Http) => language.text("Stopping HTTP", "正在停止 HTTP"),
         ServiceOperation::Stop(Protocol::Tftp) => language.text("Stopping TFTP", "正在停止 TFTP"),
         ServiceOperation::Stop(Protocol::Nfs) => language.text("Stopping NFSv3", "正在停止 NFSv3"),
+        ServiceOperation::Stop(Protocol::ProxyDhcp) => {
+            language.text("Stopping ProxyDHCP", "正在停止 ProxyDHCP")
+        }
         ServiceOperation::StopAll => language.text("Stopping all services", "正在停止所有服务"),
     }
 }
@@ -1301,10 +1381,10 @@ fn draw_notice(ui: &mut egui::Ui, notice: &UiNotice, language: Language) {
 
 fn service_widths(width: f32) -> [f32; 5] {
     [
-        80.0,
+        112.0,
         120.0,
-        (width - 80.0 - 120.0 - 78.0 - 186.0 - 40.0).max(170.0),
-        78.0,
+        (width - 112.0 - 120.0 - 118.0 - 186.0 - 40.0).max(170.0),
+        118.0,
         186.0,
     ]
 }
@@ -1392,6 +1472,14 @@ impl eframe::App for FilemuxApp {
             });
         self.handle_close(ctx);
         self.apply_editor_actions();
+        if self
+            .pxe_check_form
+            .as_ref()
+            .is_some_and(|checked| checked != &self.form)
+        {
+            self.pxe_check = None;
+            self.pxe_check_form = None;
+        }
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }

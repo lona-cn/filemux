@@ -10,6 +10,7 @@
 //! Uploads are streamed, size-limited and published without replacing existing entries.
 
 use crate::fs::{DirEntry, FsError, NodeKind, SharedFs, Upload};
+use crate::pxe::{MENU_PATH, PreparedPxe};
 use crate::{Endpoint, EventSender, HttpConfig, Protocol, ServerHandle, Transport, emit};
 use anyhow::{Context, Result, ensure};
 use axum::Router;
@@ -38,6 +39,7 @@ const MAX_MULTIPART_OVERHEAD: u64 = 64 * 1024;
 #[derive(Clone)]
 struct AppState {
     fs: Arc<SharedFs>,
+    pxe: Option<PreparedPxe>,
     events: EventSender,
     allow_upload: bool,
     max_upload_bytes: u64,
@@ -48,6 +50,7 @@ struct AppState {
 pub async fn start(
     fs: Arc<SharedFs>,
     config: HttpConfig,
+    pxe: Option<PreparedPxe>,
     events: EventSender,
 ) -> Result<ServerHandle> {
     ensure!(
@@ -74,6 +77,7 @@ pub async fn start(
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(AppState {
             fs,
+            pxe,
             events: events.clone(),
             allow_upload: config.allow_upload,
             max_upload_bytes: config.max_upload_bytes,
@@ -154,6 +158,38 @@ async fn request(State(state): State<AppState>, request: Request<Body>) -> Respo
 async fn dispatch(state: &AppState, request: Request<Body>) -> Response {
     let method = request.method();
     let head = method == Method::HEAD;
+    if request.uri().path() == MENU_PATH {
+        let Some(pxe) = &state.pxe else {
+            return message(StatusCode::NOT_FOUND, "Not found\n", head);
+        };
+        if method != Method::GET && !head {
+            let mut response = message(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "Method not allowed\n",
+                false,
+            );
+            response
+                .headers_mut()
+                .insert(header::ALLOW, "GET, HEAD".parse().unwrap());
+            return response;
+        }
+        let mut response = Response::new(if head {
+            Body::empty()
+        } else {
+            Body::from(pxe.menu.clone())
+        });
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "text/plain; charset=utf-8".parse().unwrap(),
+        );
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, pxe.menu.len().into());
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        return response;
+    }
     let write = method == Method::PUT || method == Method::POST;
     if method != Method::GET && !head && (!write || !state.allow_upload) {
         let mut response = message(

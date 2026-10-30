@@ -1,10 +1,15 @@
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
+use filemux_core::pxe::{
+    self,
+    download::{BootTool, download_tool},
+};
 use filemux_core::{Config, default_config_path, engine::Engine};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(name = "filemux", version, about = "TFTP、HTTP、NFSv3 文件共享服务")]
@@ -24,6 +29,11 @@ struct Cli {
 enum Command {
     #[command(about = "检查配置，不启动服务")]
     Check,
+    #[command(about = "PXE 启动工具（仅在主动执行时下载）")]
+    Pxe {
+        #[command(subcommand)]
+        command: PxeCommand,
+    },
     #[command(about = "创建配置文件，不覆盖已有配置")]
     Init {
         #[arg(long, help = "已经存在的共享目录")]
@@ -62,6 +72,21 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum PxeCommand {
+    #[command(about = "从固定官方 HTTPS 来源下载，不覆盖已有文件")]
+    Download {
+        #[arg(value_enum)]
+        tool: Tool,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Tool {
+    Ipxe,
+    Wimboot,
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run(Cli::parse()).await {
@@ -93,7 +118,7 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let mut config = if path.exists() {
         Config::load(&path)?
-    } else if explicit_config || matches!(cli.command, Command::Check) {
+    } else if explicit_config || matches!(cli.command, Command::Check | Command::Pxe { .. }) {
         bail!(
             "配置文件不存在：{}；可使用 filemux init --root <共享目录> 创建",
             path.display()
@@ -105,7 +130,69 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Check => {
             config.validate()?;
             println!("配置有效：{}", path.display());
+            if config.pxe.enabled {
+                let inspected = config.clone();
+                let report = tokio::task::spawn_blocking(move || pxe::check_resources(&inspected))
+                    .await
+                    .context("PXE 文件检查任务异常")??;
+                println!("PXE 菜单：{}", report.menu_url);
+                println!(
+                    "外部 DHCP：next-server={}；BIOS={}；UEFI x64={}",
+                    config.pxe.server_ip, config.pxe.bios_bootfile, config.pxe.uefi_x64_bootfile
+                );
+                println!(
+                    "固件首次请求按 option 93 的 BIOS x86 / UEFI x64 返回对应文件；已进入 iPXE 的请求返回菜单 URL，避免重复加载 iPXE。"
+                );
+                println!("两种模式都需要原 DHCP 分配 IP；Filemux 不修改路由器配置。");
+                for resource in &report.resources {
+                    println!(
+                        "{} · {}：{}",
+                        resource.name,
+                        resource.path,
+                        resource.error.as_deref().unwrap_or("文件存在")
+                    );
+                }
+                for warning in &report.warnings {
+                    println!("注意：{warning}");
+                }
+                ensure!(
+                    report.is_ok(),
+                    "PXE 启动文件检查失败；请将缺失的真实资源放入共享目录"
+                );
+            }
             println!("尚未启动服务，也未检查监听端口或持久状态是否可用。");
+            Ok(())
+        }
+        Command::Pxe {
+            command: PxeCommand::Download { tool },
+        } => {
+            let tool = match tool {
+                Tool::Ipxe => BootTool::Ipxe,
+                Tool::Wimboot => BootTool::Wimboot,
+            };
+            let spec = tool.spec();
+            println!(
+                "{}：{}\n源码：{}\n许可：{}",
+                spec.version, spec.url, spec.source_url, spec.license_url
+            );
+            let cancel = CancellationToken::new();
+            let download = download_tool(&config, tool, cancel.clone());
+            tokio::pin!(download);
+            let report = tokio::select! {
+                result = &mut download => result?,
+                signal = shutdown_signal() => {
+                    cancel.cancel();
+                    let result = download.await;
+                    signal?;
+                    result?
+                }
+            };
+            for path in report.saved {
+                println!("已保存：{path}");
+            }
+            for path in report.skipped {
+                println!("已存在，未覆盖：{path}");
+            }
             Ok(())
         }
         Command::Serve {

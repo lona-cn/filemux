@@ -26,6 +26,7 @@ Screenshots show the current development version.
 | HTTP | TCP 8080 | Directory browsing, GET, HEAD and single byte ranges. Browser and PUT uploads are opt-in and never overwrite files. |
 | TFTP | UDP 69; dynamic UDP data ports | Octet transfers with `blksize`, `timeout` and `tsize`. Uploads are opt-in and never overwrite files. |
 | NFSv3 / MOUNTv3 | TCP/UDP 2049; optional portmapper v2 on 111 | Read-only, with persistent file handles and subdirectory mounts. |
+| ProxyDHCP (optional) | UDP 67 and 4011 | PXE boot information only; an existing DHCP server must still assign addresses. Disabled by default. |
 
 ### Install
 
@@ -85,6 +86,26 @@ Configure paths and protocols in **Settings**, then start services on **Services
 
 The interface follows the system language, with **English** and **简体中文** available under **Settings → General → Interface language**. Language changes apply immediately and are saved separately on normal exit; service settings are unaffected. Raw logs and system diagnostics retain their original text. Closing the window stops its own services, not a separate CLI process.
 
+### PXE boot
+
+Under **Settings → PXE**, select a local IPv4 address and add Linux (kernel, initrd and arguments), Windows PE (`boot.wim`), or an existing local iPXE script. Paths are relative to the shared directory and use `/`; absolute paths, traversal and reserved names are rejected. Prepare Linux/WinPE files yourself. WinPE uses modern wimboot's WIM extraction; advanced BCD/boot.sdi or injected-file setups belong in a custom iPXE script.
+
+Enable HTTP and TFTP for CLI startup. HTTP must use a fixed nonzero IPv4 port and listen on the selected address or `0.0.0.0`; TFTP must use port 69. The menu is `http://<server_ip>:<http_port>/.filemux-pxe/menu.ipxe`. **Check boot files**, or `filemux --config filemux.toml check`, reports all missing resources without creating state. This checks paths and non-empty regular files, not bootability or subsequent changes. A timeout of `0` waits for manual selection; failed boots return to the menu without another countdown.
+
+- **External DHCP** is the default mode. Configure your DHCP server's next-server as the selected IPv4. For firmware requests, select the BIOS x86 or UEFI x64 bootfile using option 93: `0` → `undionly.kpxe`, `7` → `snponly.efi`; legacy RFC 4578 x64 value `9` is also accepted (current IANA calls `9` EBC). Other architectures are not treated as x64. For clients already running iPXE, return the HTTP menu URL instead of another binary. The GUI and `check` show your configured filenames and URL. Filemux does not change router settings.
+- **ProxyDHCP** additionally binds wildcard UDP 67/4011, but only responds on the interface owning the selected IPv4. It provides no address pool, lease, gateway or DNS settings, ignores relay and unrelated DHCP requests, and does not replace the existing DHCP server. Free ports and appropriate privileges are required; no port reuse, elevation or firewall changes are attempted. If port 67 is occupied, use external DHCP or another host. In the GUI, start HTTP and TFTP before ProxyDHCP; stop ProxyDHCP before either dependency. `serve` starts them in order and rolls back on failure.
+
+Third-party boot programs can be supplied locally or downloaded explicitly:
+
+```sh
+filemux --config filemux.toml pxe download ipxe
+filemux --config filemux.toml pxe download wimboot
+```
+
+The fixed official releases are [iPXE 2.0.0](https://github.com/ipxe/ipxe/releases/tag/v2.0.0) and [wimboot 2.9.0](https://github.com/ipxe/wimboot/releases/tag/v2.9.0), downloaded over verified HTTPS and checked against pinned SHA-256 digests. Downloads never overwrite files or start services. Parent directories must exist; already-present files are retained without downloading again. Cancelling cleans temporary files, but does not remove a file already published in a two-file iPXE download. The GUI requires saved, unchanged settings for downloads and links each tool's source and license ([iPXE](https://ipxe.org/licensing), [wimboot](https://github.com/ipxe/wimboot/blob/v2.9.0/LICENSE.txt)). These binaries are not bundled with Filemux; Windows images are never downloaded.
+
+Supported scope: BIOS x86 / UEFI x64, one explicitly selected IPv4 interface, clients on the same subnet. No IPv6, relay, Secure Boot, arbitrary ISO import, Windows installation or macOS client boot. Windows/Linux protocol checks use software clients; physical firmware/router interoperability and complete Linux/WinPE boot remain unverified. macOS server code is implemented but not runtime-tested in this change.
+
 ### NFS clients
 
 High-port example with explicit NFS and MOUNT ports, without port discovery:
@@ -103,7 +124,7 @@ Keep the original shared root, objects and state directory to reuse NFS handles 
 - **Trusted networks only.** HTTP and TFTP have no user authentication; NFS AUTH_SYS does not verify remote UID/GID claims. None is encrypted, and HTTP does not provide HTTPS. Enable uploads only for trusted clients. File access remains subject to the server process's host permissions.
 - Bind to the server's specific interface for LAN access. Low ports may require privileges; Filemux does not elevate itself, change firewall rules or replace system rpcbind. TFTP firewall rules must allow dynamic data ports too.
 - Native file creation times are required. Windows currently requires NTFS and exposes virtual `0555` permissions, not full POSIX/ACL semantics; Linux file reads rely on `/proc/self/fd`. Directory scans are limited to 10,000 entries. Read-only rootfs writes need client-side tmpfs/OverlayFS or equivalent.
-- No DHCP/PXE, NFSv2/v4, NLM/statd, Kerberos or rootfs image conversion. U-Boot hardware and complete diskless boot have not been validated.
+- No full DHCP address allocation, NFSv2/v4, NLM/statd, Kerberos or rootfs image conversion. U-Boot hardware and complete diskless boot have not been validated.
 
 ### Development
 
@@ -134,6 +155,7 @@ Rust 编写的跨平台文件共享服务，面向可信局域网中的启动文
 | HTTP | TCP 8080 | 目录浏览、GET、HEAD、单段字节 Range；可单独开启浏览器与 PUT 上传，不覆盖已有文件。 |
 | TFTP | UDP 69；数据使用动态 UDP 端口 | octet 传输，支持 `blksize`、`timeout`、`tsize`；上传默认关闭，开启后也不覆盖已有文件。 |
 | NFSv3 / MOUNTv3 | TCP/UDP 2049；可选 portmapper v2 使用 111 | 只读，支持持久文件句柄与子目录挂载。 |
+| ProxyDHCP（可选） | UDP 67、4011 | 仅提供 PXE 启动信息，仍需原 DHCP 分配地址；默认关闭。 |
 
 ### 安装
 
@@ -193,6 +215,26 @@ cargo run -p filemux-gui -- --config filemux.toml
 
 界面默认跟随系统语言，可在**设置 → 通用 → 界面语言**选择 **English / 简体中文**。选择立即生效，正常关闭时单独保存，不修改服务配置；原始日志和系统诊断保留原文。关闭窗口会停止其内部服务，不管理独立 CLI 进程。上方截图为当前开发版本。
 
+### PXE 启动
+
+在**设置 → PXE**中选择本机 IPv4，并添加 Linux（kernel、initrd、参数）、Windows PE（`boot.wim`）或共享目录内已有的 iPXE 脚本。资源路径相对于共享目录，使用 `/`；拒绝绝对路径、越界路径和保留名称。Linux／WinPE 文件需自行准备。WinPE 使用现代 wimboot 的 WIM 自动提取；需自带 BCD、boot.sdi 或注入文件时使用自定义 iPXE 脚本。
+
+CLI 启动 PXE 时须同时启用 HTTP、TFTP。HTTP 须使用非零固定 IPv4 端口，并监听所选 IP 或 `0.0.0.0`；TFTP 须使用 69 端口。菜单地址为 `http://<server_ip>:<http_port>/.filemux-pxe/menu.ipxe`。**检查启动文件**或 `filemux --config filemux.toml check` 会逐项报告缺失资源，不创建 state；它只检查路径和非空常规文件，不证明镜像能启动，也不保证文件此后不变。选择超时 `0` 表示等待人工选择；启动失败后回到菜单，不再次倒计时。
+
+- 默认使用**外部 DHCP**。在原 DHCP 中将 next-server 填为所选 IPv4；固件首次请求按 option 93 区分：`0` 为 BIOS x86（默认 `undionly.kpxe`），`7` 为 UEFI x64（默认 `snponly.efi`）；兼容历史 RFC 4578 的 x64 值 `9`，但当前 IANA 将 `9` 记为 EBC。不能把所有非 BIOS 请求都当作 x64。已进入 iPXE 的请求应返回 HTTP 菜单 URL，不要再次返回二进制文件。GUI 和 `check` 显示实际配置的文件名、IP 和 URL；Filemux 不修改路由器设置。
+- **ProxyDHCP** 另外监听 wildcard UDP 67／4011，但仅响应所选 IPv4 所属接口。它不提供地址池、租约、网关、DNS，不响应 relay 和无关的 DHCP 请求，也不替代原 DHCP。端口须空闲，可能需要权限；程序不启用端口复用、不提权、不修改防火墙。67 已被占用时，请使用外部 DHCP 或另一台主机。GUI 须先启动 HTTP、TFTP，再启动 ProxyDHCP；先停代理，才能停其依赖。`serve` 按顺序启动，失败时全部回滚。
+
+第三方启动程序既可自行放入共享目录，也可主动下载：
+
+```sh
+filemux --config filemux.toml pxe download ipxe
+filemux --config filemux.toml pxe download wimboot
+```
+
+固定使用官方 [iPXE 2.0.0](https://github.com/ipxe/ipxe/releases/tag/v2.0.0) 和 [wimboot 2.9.0](https://github.com/ipxe/wimboot/releases/tag/v2.9.0)，校验 HTTPS 与固定 SHA-256。下载不覆盖文件、不启动服务；父目录须已存在。已有文件保留，不再联网；取消会清理临时文件，但不会删除 iPXE 两文件下载中已经成功保存的文件。GUI 下载须使用已保存且没有修改的设置，并显示源码与许可链接（[iPXE](https://ipxe.org/licensing)、[wimboot](https://github.com/ipxe/wimboot/blob/v2.9.0/LICENSE.txt)）。安装包不附带这些二进制，也不下载 Windows 镜像。
+
+支持范围为 BIOS x86／UEFI x64、单个明确选择的 IPv4 接口、同一子网；不含 IPv6、relay、Secure Boot、任意 ISO 导入、Windows 安装或 macOS 客户端启动。Windows／Linux 协议检查使用软件客户端，不等于物理固件、真实路由器互操作或完整 Linux／WinPE 开机；本轮未运行 macOS 服务端实机测试。
+
 ### NFS 客户端
 
 使用高端口、关闭端口发现，由客户端显式指定 NFS 和 MOUNT 端口：
@@ -208,10 +250,10 @@ sudo mount -t nfs -o ro,vers=3,proto=tcp,mountproto=tcp,port=12049,mountport=120
 
 ### 安全与限制
 
-- **仅用于可信网络。** HTTP、TFTP 均无用户认证，NFS AUTH_SYS 不验证远程 UID/GID 声明。三种协议均不加密，HTTP 不提供 HTTPS；只应向可信客户端开放上传。实际文件访问仍受服务端进程的宿主权限限制。
+- **仅用于可信网络。** HTTP、TFTP 均无用户认证，NFS AUTH_SYS 不验证远程 UID/GID 声明。这些服务均不加密，HTTP 不提供 HTTPS；只应向可信客户端开放上传。实际文件访问仍受服务端进程的宿主权限限制。
 - 局域网共享应绑定具体网卡 IP。低端口可能需要额外权限；程序不自动提权、改防火墙或替换系统 rpcbind。TFTP 防火墙规则还需放行动态数据端口。
 - 文件系统需提供原生创建时间。Windows 当前要求 NTFS，对外虚拟权限为 `0555`，不等价于完整 POSIX/ACL；Linux 文件读取依赖 `/proc/self/fd`。目录扫描上限为 10,000 项；只读 rootfs 的写入需由客户端通过 tmpfs、OverlayFS 等处理。
-- 不提供 DHCP/PXE、NFSv2/v4、NLM/statd、Kerberos 或 rootfs 镜像转换。U-Boot 真机与完整无盘启动尚未验证。
+- 不提供完整 DHCP 地址分配、NFSv2/v4、NLM/statd、Kerberos 或 rootfs 镜像转换。U-Boot 真机与完整无盘启动尚未验证。
 
 ### 开发
 

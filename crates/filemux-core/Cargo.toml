@@ -31,15 +31,20 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 http-body-util = "0.1"
 fs2 = "0.4.3"
+reqwest = { workspace = true, features = ["rustls-tls"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+socket-pktinfo = "0.4.1"
+network-interface = "2.0.5"
+socket2 = { version = "0.6", features = ["all"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Networking_WinSock"] }
 
-[dev-dependencies]
-reqwest.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 junction = "2"

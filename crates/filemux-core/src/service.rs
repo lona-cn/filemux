@@ -13,10 +13,11 @@ pub enum Protocol {
     Http,
     Tftp,
     Nfs,
+    ProxyDhcp,
 }
 
 impl Protocol {
-    pub const ALL: [Self; 3] = [Self::Http, Self::Tftp, Self::Nfs];
+    pub const ALL: [Self; 4] = [Self::Http, Self::Tftp, Self::Nfs, Self::ProxyDhcp];
 }
 
 impl fmt::Display for Protocol {
@@ -25,6 +26,7 @@ impl fmt::Display for Protocol {
             Self::Http => "HTTP",
             Self::Tftp => "TFTP",
             Self::Nfs => "NFSv3",
+            Self::ProxyDhcp => "ProxyDHCP",
         })
     }
 }

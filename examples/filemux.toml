@@ -33,3 +33,41 @@ rpcbind = "127.0.0.1:111"
 export = "/"
 max_connections = 64
 max_request_bytes = 1048576
+
+# PXE 默认关闭。启用时，http.enabled 和 tftp.enabled 也须为 true。
+[pxe]
+enabled = false
+mode = "external_dhcp" # 另一值为 proxy_dhcp，仍需原 DHCP 分配 IP。
+# 改为客户端可访问的本机 IPv4；HTTP/TFTP 须监听该 IP 或 0.0.0.0。
+server_ip = "0.0.0.0"
+bios_bootfile = "undionly.kpxe"
+uefi_x64_bootfile = "snponly.efi"
+wimboot = "wimboot" # 仅有 Windows PE 项时需要。
+timeout_secs = 10 # 0 等待人工选择；失败后不再次倒计时。
+entries = []
+# 未指定 default_entry 时使用第一项；指定时必须匹配现有 ID。
+# default_entry = "linux"
+#
+# 所有资源均为共享目录内相对路径，使用 /。资源需自行准备，
+# 或主动执行 pxe download ipxe / pxe download wimboot；不会下载镜像。
+# 添加下面菜单时，删除上面的 entries = []，并取消相应段落注释。
+#
+# [[pxe.entries]]
+# kind = "linux"
+# id = "linux"
+# title = "Linux"
+# kernel = "linux/vmlinuz"
+# initrd = "linux/initrd.img"
+# args = "" # 按发行版需要填写；不会自动追加 initrd= 等参数。
+#
+# [[pxe.entries]]
+# kind = "winpe"
+# id = "windows"
+# title = "Windows PE"
+# boot_wim = "winpe/boot.wim"
+#
+# [[pxe.entries]]
+# kind = "chain"
+# id = "custom"
+# title = "Custom iPXE"
+# script = "boot/custom.ipxe"

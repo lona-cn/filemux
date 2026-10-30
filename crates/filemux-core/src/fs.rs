@@ -822,7 +822,7 @@ fn validate_component(name: &OsStr) -> Result<()> {
     Ok(())
 }
 
-fn validate_path(path: &Path) -> Result<PathBuf> {
+pub(crate) fn validate_path(path: &Path) -> Result<PathBuf> {
     let mut result = PathBuf::new();
     for component in path.components() {
         match component {

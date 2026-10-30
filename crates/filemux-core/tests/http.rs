@@ -48,7 +48,7 @@ impl Fixture {
 
     async fn start_with_config(&self, config: HttpConfig) -> ServerHandle {
         let (events, _) = tokio::sync::broadcast::channel(32);
-        filemux_core::http::start(self.fs.clone(), config, events)
+        filemux_core::http::start(self.fs.clone(), config, None, events)
             .await
             .unwrap()
     }

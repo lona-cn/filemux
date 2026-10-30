@@ -2,6 +2,10 @@ use crate::i18n::{Language, UiNotice, UiText};
 use anyhow::{Context, Result};
 use eframe::egui;
 use filemux_core::engine::{Engine, ServiceSnapshot};
+use filemux_core::pxe::{
+    PxeCheckReport,
+    download::{BootTool, DownloadReport},
+};
 use filemux_core::{Config, Event, Protocol, ServiceState};
 use std::collections::VecDeque;
 use std::io;
@@ -28,12 +32,25 @@ pub enum ServiceOperation {
     StopAll,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PxeTask {
+    Check,
+    Download(BootTool),
+}
+
+enum PxeResult {
+    Check(std::result::Result<PxeCheckReport, String>),
+    Download(std::result::Result<DownloadReport, String>),
+}
+
 pub enum Command {
     Save(Config),
     Start(Protocol),
     Stop(Protocol),
     StopAll,
     PickDirectory(DirectoryTarget, PathBuf, Language),
+    CheckPxe(Config),
+    DownloadBootTool(BootTool),
 }
 
 impl Command {
@@ -60,6 +77,9 @@ pub struct UiState {
     pub service_errors: Vec<(Protocol, UiNotice)>,
     pub settings_in_use: bool,
     pub stopped: bool,
+    pub pxe_task: Option<PxeTask>,
+    pub pxe_check: Option<std::result::Result<PxeCheckReport, String>>,
+    pub pxe_download: Option<std::result::Result<DownloadReport, String>>,
 }
 
 pub struct Worker {
@@ -101,6 +121,9 @@ impl Worker {
             service_errors: Vec::new(),
             settings_in_use: has_saved_config,
             stopped: false,
+            pxe_task: None,
+            pxe_check: None,
+            pxe_download: None,
         }));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -126,6 +149,7 @@ impl Worker {
                     let mut operation_errors = Vec::new();
                     let mut save: Option<SaveTask> = None;
                     let mut picker: Option<PickerTask> = None;
+                    let mut pxe: Option<tokio::task::JoinHandle<PxeResult>> = None;
                     let mut health = tokio::time::interval(Duration::from_millis(500));
                     loop {
                         tokio::select! {
@@ -153,9 +177,45 @@ impl Worker {
                                 drop(ui);
                                 ctx.request_repaint();
                             }
+                            result = async { pxe.as_mut().expect("pending PXE task").await }, if pxe.is_some() => {
+                                pxe = None;
+                                let mut ui = shared.lock().expect("UI state mutex");
+                                let task = ui.pxe_task.take();
+                                match result {
+                                    Ok(PxeResult::Check(result)) => ui.pxe_check = Some(result),
+                                    Ok(PxeResult::Download(result)) => ui.pxe_download = Some(result),
+                                    Err(error) => {
+                                        let message = format!("{error:#}");
+                                        if task == Some(PxeTask::Check) { ui.pxe_check = Some(Err(message)); }
+                                        else { ui.pxe_download = Some(Err(message)); }
+                                    }
+                                }
+                                drop(ui);
+                                ctx.request_repaint();
+                            }
                             command = receiver.recv() => {
                                 let Some(command) = command else { break };
                                 match command {
+                                    Command::CheckPxe(config) => {
+                                        pxe = Some(tokio::spawn(async move {
+                                            let result = tokio::task::spawn_blocking(move || filemux_core::pxe::check_resources(&config))
+                                                .await.map_err(|error| format!("{error:#}"))
+                                                .and_then(|result| result.map_err(|error| format!("{error:#}")));
+                                            PxeResult::Check(result)
+                                        }));
+                                    }
+                                    Command::DownloadBootTool(tool) => {
+                                        let config = saved_config.clone();
+                                        let cancel = stop.child_token();
+                                        pxe = Some(tokio::spawn(async move {
+                                            let result = match config {
+                                                Some(config) => filemux_core::pxe::download::download_tool(&config, tool, cancel)
+                                                    .await.map_err(|error| format!("{error:#}")),
+                                                None => Err("Save settings before downloading / 请先保存设置再下载".into()),
+                                            };
+                                            PxeResult::Download(result)
+                                        }));
+                                    }
                                     Command::Save(config) => {
                                         let path = config_path.clone();
                                         save = Some(tokio::task::spawn_blocking(move || {
@@ -268,6 +328,10 @@ impl Worker {
                         task.abort();
                     }
                     let result = engine.stop_all().await;
+                    if let Some(task) = pxe.take() {
+                        // stop is already cancelled; await rooted temporary-file cleanup.
+                        let _ = task.await;
+                    }
                     while let Ok(event) = events.try_recv() {
                         push_log(&shared, event);
                     }
@@ -281,6 +345,7 @@ impl Worker {
                     ui.operation = None;
                     ui.saving = false;
                     ui.picking = None;
+                    ui.pxe_task = None;
                     ui.stopped = true;
                     if let Err(error) = result {
                         eprintln!("Failed to stop GUI services: {error:#}");
@@ -311,7 +376,32 @@ impl Worker {
                 "程序正在关闭，无法接受新操作",
             ));
         }
+        if ui.pxe_task.is_some() && !matches!(&command, Command::Stop(_) | Command::StopAll) {
+            return Err(UiNotice::new(
+                "Wait for the PXE file task; services can still be stopped",
+                "请等待 PXE 文件任务完成；仍可停止服务",
+            ));
+        }
         match &command {
+            Command::CheckPxe(_) | Command::DownloadBootTool(_) => {
+                if ui.saving || ui.picking.is_some() || ui.operation.is_some() {
+                    return Err(UiNotice::new(
+                        "Wait for the current operation before checking or downloading PXE files",
+                        "请等待当前操作完成，再检查或下载 PXE 文件",
+                    ));
+                }
+                ui.pxe_task = Some(match &command {
+                    Command::CheckPxe(_) => {
+                        ui.pxe_check = None;
+                        PxeTask::Check
+                    }
+                    Command::DownloadBootTool(tool) => {
+                        ui.pxe_download = None;
+                        PxeTask::Download(*tool)
+                    }
+                    _ => unreachable!(),
+                });
+            }
             Command::Save(_) => {
                 if ui.saving {
                     return Err(UiNotice::new(
@@ -378,6 +468,7 @@ impl Worker {
             match error.into_inner() {
                 Command::Save(_) => ui.saving = false,
                 Command::PickDirectory(_, _, _) => ui.picking = None,
+                Command::CheckPxe(_) | Command::DownloadBootTool(_) => ui.pxe_task = None,
                 _ => ui.operation = None,
             }
             return Err(reason);

@@ -354,4 +354,31 @@ fn init_and_check_do_not_overwrite_existing_configuration() {
         !temp.path().join("state").exists(),
         "check must not start services or initialize state"
     );
+    let mut config = Config::load(&path).unwrap();
+    config.pxe.enabled = true;
+    config.pxe.server_ip = std::net::Ipv4Addr::LOCALHOST;
+    config.pxe.entries.push(filemux_core::PxeEntry::Chain {
+        id: "boot".into(),
+        title: "Boot".into(),
+        script: "missing.ipxe".into(),
+    });
+    config.save(&path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_filemux"))
+        .arg("--config")
+        .arg(&path)
+        .arg("check")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("undionly.kpxe")
+            && text.contains("snponly.efi")
+            && text.contains("missing.ipxe"),
+        "{text}"
+    );
+    assert!(
+        !config.state_dir.exists(),
+        "PXE check must not initialize state"
+    );
 }

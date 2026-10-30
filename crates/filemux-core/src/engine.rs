@@ -155,22 +155,64 @@ impl Engine {
 
     async fn launch(&mut self, protocol: Protocol) -> Result<ServerHandle> {
         self.config.validate()?;
+        if protocol == Protocol::ProxyDhcp {
+            ensure!(
+                self.config.pxe.enabled && self.config.pxe.mode == crate::PxeMode::ProxyDhcp,
+                "请在 PXE 设置中启用 ProxyDHCP 模式"
+            );
+            ensure!(
+                [Protocol::Http, Protocol::Tftp]
+                    .iter()
+                    .all(|dependency| self.servers.contains_key(dependency)
+                        && self.snapshots[dependency].state == ServiceState::Running),
+                "请先启动 HTTP 和 TFTP，再启动 ProxyDHCP"
+            );
+            return crate::pxe::proxy::start(
+                self.config.pxe.clone(),
+                self.config.http.bind.port(),
+                self.events.clone(),
+            )
+            .await
+            .with_context(|| format!("无法启动 {protocol}"));
+        }
         let fs = self.filesystem().await?;
         let events = self.events.clone();
         match protocol {
-            Protocol::Http => crate::http::start(fs, self.config.http.clone(), events).await,
+            Protocol::Http => {
+                let pxe = if self.config.pxe.enabled {
+                    let config = self.config.clone();
+                    let shared = Arc::clone(&fs);
+                    Some(
+                        tokio::task::spawn_blocking(move || crate::pxe::prepare(&config, &shared))
+                            .await
+                            .context("PXE 菜单准备任务异常")??,
+                    )
+                } else {
+                    None
+                };
+                crate::http::start(fs, self.config.http.clone(), pxe, events).await
+            }
             Protocol::Tftp => crate::tftp::start(fs, self.config.tftp.clone(), events).await,
             Protocol::Nfs => crate::nfs::start(fs, self.config.nfs.clone(), events).await,
+            Protocol::ProxyDhcp => unreachable!("handled before filesystem initialization"),
         }
         .with_context(|| format!("无法启动 {protocol}"))
     }
 
     /// A CLI startup is all-or-nothing: do not leave an unnoticed partially started configuration.
     pub async fn start_enabled(&mut self) -> Result<()> {
+        ensure!(
+            !self.config.pxe.enabled || (self.config.http.enabled && self.config.tftp.enabled),
+            "启用 PXE 时必须同时启用 HTTP 和 TFTP"
+        );
         let requested = [
             (Protocol::Http, self.config.http.enabled),
             (Protocol::Tftp, self.config.tftp.enabled),
             (Protocol::Nfs, self.config.nfs.enabled),
+            (
+                Protocol::ProxyDhcp,
+                self.config.pxe.enabled && self.config.pxe.mode == crate::PxeMode::ProxyDhcp,
+            ),
         ];
         ensure!(
             requested.iter().any(|(_, enabled)| *enabled),
@@ -194,6 +236,11 @@ impl Engine {
     }
 
     pub async fn stop(&mut self, protocol: Protocol) -> Result<()> {
+        ensure!(
+            !matches!(protocol, Protocol::Http | Protocol::Tftp)
+                || !self.servers.contains_key(&Protocol::ProxyDhcp),
+            "请先停止 ProxyDHCP"
+        );
         let Some(server) = self.servers.remove(&protocol) else {
             return Ok(());
         };
@@ -246,8 +293,31 @@ impl Engine {
             .filter_map(|(protocol, server)| server.is_finished().then_some(*protocol))
             .collect();
         let mut errors = Vec::new();
+        if finished
+            .iter()
+            .any(|protocol| matches!(protocol, Protocol::Http | Protocol::Tftp))
+        {
+            if let Some(proxy) = self.servers.remove(&Protocol::ProxyDhcp) {
+                let stopped = proxy.shutdown().await;
+                let mut error = "ProxyDHCP 已停止：HTTP 或 TFTP 依赖服务已停止".to_string();
+                if let Err(stop_error) = stopped {
+                    error.push_str(&format!("；{stop_error:#}"));
+                }
+                let snapshot = self
+                    .snapshots
+                    .get_mut(&Protocol::ProxyDhcp)
+                    .expect("known protocol");
+                snapshot.state = ServiceState::Failed;
+                snapshot.endpoints.clear();
+                snapshot.error = Some(error.clone());
+                emit(&self.events, Protocol::ProxyDhcp, &error, true);
+                errors.push(error);
+            }
+        }
         for protocol in finished {
-            let server = self.servers.remove(&protocol).expect("existing server");
+            let Some(server) = self.servers.remove(&protocol) else {
+                continue;
+            };
             let error = match server.shutdown().await {
                 Ok(()) => format!("{protocol} 服务意外停止"),
                 Err(error) => format!("{protocol} 服务异常退出：{error:#}"),
@@ -263,5 +333,38 @@ impl Engine {
             bail!("{}", errors.join("；"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn pxe_dependencies_fail_before_opening_filesystem_or_listeners() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("share");
+        std::fs::create_dir(&root).unwrap();
+        let mut config = Config {
+            root,
+            state_dir: dir.path().join("state"),
+            ..Config::default()
+        };
+        config.pxe.enabled = true;
+        config.pxe.mode = crate::PxeMode::ProxyDhcp;
+        config.pxe.server_ip = std::net::Ipv4Addr::LOCALHOST;
+        config.pxe.entries.push(crate::PxeEntry::Chain {
+            id: "boot".into(),
+            title: "Boot".into(),
+            script: "boot.ipxe".into(),
+        });
+        config.http.enabled = false;
+        let mut engine = Engine::new(config.clone());
+        assert!(engine.start_enabled().await.is_err());
+        assert!(engine.is_idle());
+        assert!(!config.state_dir.exists());
+        assert!(engine.start(Protocol::ProxyDhcp).await.is_err());
+        assert!(engine.is_idle());
+        assert!(!config.state_dir.exists());
     }
 }
